@@ -5,90 +5,75 @@ from datetime import datetime
 import pytz
 import statistics
 
-st.set_page_config(page_title="Scanner V5 PRO", layout="wide")
+st.set_page_config(page_title="Scanner SofaScore V6", layout="wide")
 
-st.title("🌍 Scanner Automático V5 PRO (SOFASCORE + API)")
+st.title("🌍 Scanner Automático V6 (SOFASCORE ONLY)")
 
-API_KEY = "SUA_API_KEY_AQUI"
-
-HEADERS_API = {
-    "x-apisports-key": API_KEY,
-    "User-Agent": "Mozilla/5.0"
-}
-
-HEADERS_SOFA = {
+HEADERS = {
     "User-Agent": "Mozilla/5.0"
 }
 
 # =============================
 # DATA
 # =============================
-data_input = st.date_input("📅 Selecione a data:", value=datetime.today())
-
+data_input = st.date_input("📅 Data dos jogos:", value=datetime.today())
 data_alvo = data_input.strftime('%Y-%m-%d')
 
-st.write(f"🔎 Data: **{data_alvo}**")
+st.write(f"🔎 Buscando jogos: **{data_alvo}**")
 
 # =============================
-# JOGOS VIA SOFASCORE
+# JOGOS DO DIA (SOFASCORE)
 # =============================
 @st.cache_data(ttl=600)
-def get_matches_sofascore(data_alvo):
+def get_matches(data_alvo):
     try:
         url = f"https://api.sofascore.com/api/v1/sport/football/scheduled-events/{data_alvo}"
-
-        response = requests.get(url, headers=HEADERS_SOFA)
-        data = response.json()
+        data = requests.get(url, headers=HEADERS).json()
 
         matches = []
 
-        for event in data.get("events", []):
+        for e in data.get("events", []):
             matches.append({
-                "home": event["homeTeam"]["name"],
-                "away": event["awayTeam"]["name"],
-                "home_id": event["homeTeam"]["id"],
-                "away_id": event["awayTeam"]["id"],
-                "league": event["tournament"]["name"]
+                "home": e["homeTeam"]["name"],
+                "away": e["awayTeam"]["name"],
+                "home_id": e["homeTeam"]["id"],
+                "away_id": e["awayTeam"]["id"],
+                "league": e["tournament"]["name"]
             })
 
         return matches
 
-    except Exception as e:
-        st.error(f"Erro SofaScore: {e}")
+    except:
         return []
 
 # =============================
-# DADOS API (API-FOOTBALL)
+# ESTATÍSTICAS (SOFASCORE)
 # =============================
 @st.cache_data(ttl=600)
-def get_last_matches(team_id):
+def get_team_stats(team_id):
     try:
-        url = "https://v3.football.api-sports.io/fixtures"
+        url = f"https://api.sofascore.com/api/v1/team/{team_id}/events/last/10"
+        data = requests.get(url, headers=HEADERS).json()
 
-        params = {
-            "team": team_id,
-            "last": 10
-        }
+        events = data.get("events", [])
 
-        response = requests.get(url, headers=HEADERS_API, params=params)
-        data = response.json()
-
-        events = data.get("response", [])
+        if not events:
+            return default_stats()
 
         goals_scored = []
         goals_conceded = []
         wins = []
 
         for e in events:
-            home_id = e["teams"]["home"]["id"]
+            is_home = e["homeTeam"]["id"] == team_id
 
-            hg = e["goals"]["home"]
-            ag = e["goals"]["away"]
+            hg = e["homeScore"]["current"]
+            ag = e["awayScore"]["current"]
 
             if hg is None or ag is None:
                 continue
 
-            if home_id == team_id:
+            if is_home:
                 goals_scored.append(hg)
                 goals_conceded.append(ag)
                 wins.append(1 if hg > ag else 0)
@@ -124,6 +109,7 @@ def default_stats():
 # SCORE
 # =============================
 def calculate_score(home, away):
+
     score = (
         (home["win_rate"] - away["win_rate"]) * 30 +
         (home["avg_scored"] - away["avg_scored"]) * 20 +
@@ -132,17 +118,17 @@ def calculate_score(home, away):
         (home["consistency"] - away["consistency"]) * 10
     )
 
-    score = max(0, min(100, 50 + score))
-    return score
+    score = 50 + score
+    return max(0, min(100, score))
 
-def get_prediction(score):
+def prediction(score):
     if score >= 60:
         return "Casa vence"
     elif score <= 40:
         return "Visitante vence"
     return "Sem aposta"
 
-def get_strength(score):
+def strength(score):
     if score >= 75 or score <= 25:
         return "🔥 Forte"
     elif score >= 65 or score <= 35:
@@ -152,7 +138,7 @@ def get_strength(score):
 # =============================
 # EXECUÇÃO
 # =============================
-matches = get_matches_sofascore(data_alvo)
+matches = get_matches(data_alvo)
 
 st.write(f"Jogos encontrados: {len(matches)}")
 
@@ -160,17 +146,17 @@ results = []
 
 for m in matches:
 
-    home = get_last_matches(m["home_id"])
-    away = get_last_matches(m["away_id"])
+    home_stats = get_team_stats(m["home_id"])
+    away_stats = get_team_stats(m["away_id"])
 
-    score = calculate_score(home, away)
+    score = calculate_score(home_stats, away_stats)
 
     results.append({
         "Jogo": f"{m['home']} x {m['away']}",
         "Liga": m["league"],
         "Score": round(score, 1),
-        "Aposta": get_prediction(score),
-        "Força": get_strength(score)
+        "Aposta": prediction(score),
+        "Força": strength(score)
     })
 
 # =============================
@@ -187,6 +173,5 @@ if results:
         df[df["Aposta"] != "Sem aposta"],
         use_container_width=True
     )
-
 else:
     st.warning("Nenhum jogo encontrado.")
