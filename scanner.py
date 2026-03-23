@@ -1,70 +1,64 @@
 import requests
 import pandas as pd
 import streamlit as st
-from datetime import datetime, date
+from datetime import datetime
 import pytz
 import statistics
 
 st.set_page_config(page_title="Scanner V5 PRO", layout="wide")
 
-st.title("🌍 Scanner Automático V5 PRO (MODO DECISÃO)")
+st.title("🌍 Scanner Automático V5 PRO (SOFASCORE + API)")
 
-# =============================
-# CONFIG API
-# =============================
 API_KEY = "SUA_API_KEY_AQUI"
 
-HEADERS = {
-    "x-apisports-key": API_KEY
+HEADERS_API = {
+    "x-apisports-key": API_KEY,
+    "User-Agent": "Mozilla/5.0"
+}
+
+HEADERS_SOFA = {
+    "User-Agent": "Mozilla/5.0"
 }
 
 # =============================
 # DATA
 # =============================
-data_input = st.date_input(
-    "📅 Selecione a data dos jogos:",
-    value=date.today()
-)
+data_input = st.date_input("📅 Selecione a data:", value=datetime.today())
 
 data_alvo = data_input.strftime('%Y-%m-%d')
 
-st.write(f"🔎 Buscando jogos do dia: **{data_alvo}**")
+st.write(f"🔎 Data: **{data_alvo}**")
 
 # =============================
-# BUSCAR JOGOS (API-Football)
+# JOGOS VIA SOFASCORE
 # =============================
 @st.cache_data(ttl=600)
-def get_matches(data_alvo):
+def get_matches_sofascore(data_alvo):
     try:
-        url = "https://v3.football.api-sports.io/fixtures"
+        url = f"https://api.sofascore.com/api/v1/sport/football/scheduled-events/{data_alvo}"
 
-        params = {
-            "date": data_alvo
-        }
-
-        response = requests.get(url, headers=HEADERS, params=params)
+        response = requests.get(url, headers=HEADERS_SOFA)
         data = response.json()
 
         matches = []
 
-        for event in data.get("response", []):
+        for event in data.get("events", []):
             matches.append({
-                "home_id": event["teams"]["home"]["id"],
-                "away_id": event["teams"]["away"]["id"],
-                "home": event["teams"]["home"]["name"],
-                "away": event["teams"]["away"]["name"],
-                "tournament": event["league"]["name"],
-                "country": event["league"]["country"]
+                "home": event["homeTeam"]["name"],
+                "away": event["awayTeam"]["name"],
+                "home_id": event["homeTeam"]["id"],
+                "away_id": event["awayTeam"]["id"],
+                "league": event["tournament"]["name"]
             })
 
         return matches
 
     except Exception as e:
-        st.error(f"Erro ao buscar jogos: {e}")
+        st.error(f"Erro SofaScore: {e}")
         return []
 
 # =============================
-# DADOS DOS TIMES
+# DADOS API (API-FOOTBALL)
 # =============================
 @st.cache_data(ttl=600)
 def get_last_matches(team_id):
@@ -76,7 +70,7 @@ def get_last_matches(team_id):
             "last": 10
         }
 
-        response = requests.get(url, headers=HEADERS, params=params)
+        response = requests.get(url, headers=HEADERS_API, params=params)
         data = response.json()
 
         events = data.get("response", [])
@@ -86,89 +80,61 @@ def get_last_matches(team_id):
         wins = []
 
         for e in events:
-            is_home = e["teams"]["home"]["id"] == team_id
+            home_id = e["teams"]["home"]["id"]
 
-            home_goals = e["goals"]["home"]
-            away_goals = e["goals"]["away"]
+            hg = e["goals"]["home"]
+            ag = e["goals"]["away"]
 
-            if home_goals is None or away_goals is None:
+            if hg is None or ag is None:
                 continue
 
-            if is_home:
-                goals_scored.append(home_goals)
-                goals_conceded.append(away_goals)
-                wins.append(1 if home_goals > away_goals else 0)
+            if home_id == team_id:
+                goals_scored.append(hg)
+                goals_conceded.append(ag)
+                wins.append(1 if hg > ag else 0)
             else:
-                goals_scored.append(away_goals)
-                goals_conceded.append(home_goals)
-                wins.append(1 if away_goals > home_goals else 0)
+                goals_scored.append(ag)
+                goals_conceded.append(hg)
+                wins.append(1 if ag > hg else 0)
 
         if len(goals_scored) == 0:
-            return {
-                "win_rate": 0.5,
-                "avg_scored": 1,
-                "avg_conceded": 1,
-                "home_win_rate": 0.5,
-                "away_win_rate": 0.5,
-                "recent_form": 0.5,
-                "consistency": 0.5
-            }
+            return default_stats()
 
         return {
             "win_rate": sum(wins) / len(wins),
             "avg_scored": sum(goals_scored) / len(goals_scored),
             "avg_conceded": sum(goals_conceded) / len(goals_conceded),
-            "home_win_rate": sum(wins) / len(wins),
-            "away_win_rate": sum(wins) / len(wins),
             "recent_form": sum(wins[:3]) / min(3, len(wins)),
             "consistency": 1 / (1 + (statistics.pvariance(goals_scored) + 1e-6))
         }
 
-    except Exception as e:
-        return {
-            "win_rate": 0.5,
-            "avg_scored": 1,
-            "avg_conceded": 1,
-            "home_win_rate": 0.5,
-            "away_win_rate": 0.5,
-            "recent_form": 0.5,
-            "consistency": 0.5
-        }
+    except:
+        return default_stats()
+
+def default_stats():
+    return {
+        "win_rate": 0.5,
+        "avg_scored": 1,
+        "avg_conceded": 1,
+        "recent_form": 0.5,
+        "consistency": 0.5
+    }
 
 # =============================
 # SCORE
 # =============================
 def calculate_score(home, away):
     score = (
-        (home["win_rate"] - away["win_rate"]) * 25 +
-        (home["avg_scored"] - away["avg_scored"]) * 15 +
-        (away["avg_conceded"] - home["avg_conceded"]) * 15 +
-        (home["home_win_rate"] - away["away_win_rate"]) * 20 +
-        (home["recent_form"] - away["recent_form"]) * 15 +
+        (home["win_rate"] - away["win_rate"]) * 30 +
+        (home["avg_scored"] - away["avg_scored"]) * 20 +
+        (away["avg_conceded"] - home["avg_conceded"]) * 20 +
+        (home["recent_form"] - away["recent_form"]) * 20 +
         (home["consistency"] - away["consistency"]) * 10
     )
 
     score = max(0, min(100, 50 + score))
     return score
 
-def score_to_probability(score):
-    return round(score / 100, 2)
-
-# =============================
-# FILTRO
-# =============================
-def is_valid_bet(score, home, away):
-    if 45 <= score <= 55:
-        return False
-
-    if home["consistency"] < 0.3 or away["consistency"] < 0.3:
-        return False
-
-    return True
-
-# =============================
-# DECISÃO
-# =============================
 def get_prediction(score):
     if score >= 60:
         return "Casa vence"
@@ -186,26 +152,23 @@ def get_strength(score):
 # =============================
 # EXECUÇÃO
 # =============================
-matches = get_matches(data_alvo)
+matches = get_matches_sofascore(data_alvo)
+
+st.write(f"Jogos encontrados: {len(matches)}")
 
 results = []
 
 for m in matches:
+
     home = get_last_matches(m["home_id"])
     away = get_last_matches(m["away_id"])
 
     score = calculate_score(home, away)
 
-    if not is_valid_bet(score, home, away):
-        continue
-
-    prob = score_to_probability(score)
-
     results.append({
         "Jogo": f"{m['home']} x {m['away']}",
-        "Liga": m["tournament"],
+        "Liga": m["league"],
         "Score": round(score, 1),
-        "Probabilidade": prob,
         "Aposta": get_prediction(score),
         "Força": get_strength(score)
     })
@@ -216,13 +179,14 @@ for m in matches:
 if results:
     df = pd.DataFrame(results)
 
-    st.subheader("📊 Jogos Analisados")
+    st.subheader("📊 Jogos do Dia")
     st.dataframe(df, use_container_width=True)
 
-    st.subheader("💰 Apostas Recomendadas")
+    st.subheader("💰 Apostas")
     st.dataframe(
-        df[(df["Aposta"] != "Sem aposta") & (df["Força"] != "⚠️ Arriscada")],
+        df[df["Aposta"] != "Sem aposta"],
         use_container_width=True
     )
+
 else:
-    st.warning("Nenhum jogo válido encontrado.")
+    st.warning("Nenhum jogo encontrado.")
