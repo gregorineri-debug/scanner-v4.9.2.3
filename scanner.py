@@ -72,7 +72,7 @@ def get_team_data(team_id):
             if not e.get("awayScore") or e["awayScore"].get("current") is None:
                 continue
 
-            weight = 1 - (i * 0.05)  # Peso decrescente
+            weight = 1 - (i * 0.05)
             total_weight += weight
 
             is_home = e["homeTeam"]["id"] == team_id
@@ -100,8 +100,13 @@ def get_team_data(team_id):
         home_win_rate = sum(home_perf) / max(1, len(home_perf)) if home_perf else 0.5
         away_win_rate = sum(away_perf) / max(1, len(away_perf)) if away_perf else 0.5
         recent_games = home_perf + away_perf
-        recent_form = sum(recent_games[:5]) / max(1, len(recent_games[:5]))
-        consistency = 1 / (1 + (statistics.pvariance(goals_scored) + statistics.pvariance(goals_conceded)))
+        recent_form = sum(recent_games[:5]) / max(1, len(recent_games[:5])) if recent_games else 0.5
+
+        # Corrige pvariance caso listas estejam vazias
+        variance_goals = 0
+        if goals_scored and goals_conceded:
+            variance_goals = statistics.pvariance(goals_scored) + statistics.pvariance(goals_conceded)
+        consistency = 1 / (1 + variance_goals) if variance_goals > 0 else 0.5
 
         return {
             "win_rate": win_rate,
