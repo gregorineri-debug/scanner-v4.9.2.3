@@ -2,19 +2,27 @@ import streamlit as st
 import requests
 import numpy as np
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
+# =========================
+# TIMEZONE
+# =========================
 SP_TZ = ZoneInfo("America/Sao_Paulo")
 
 # =========================
-# BUSCA JOGOS DO DIA (CORRIGIDO)
+# BUSCAR JOGOS DO DIA (CORRIGIDO)
 # =========================
 def get_today_matches():
 
-    today = datetime.now(SP_TZ).strftime("%Y-%m-%d")
+    now_sp = datetime.now(SP_TZ)
 
-    url = f"https://api.sofascore.com/api/v1/sport/football/scheduled-events/{today}"
+    start_day = now_sp.replace(hour=0, minute=0, second=0, microsecond=0)
+    end_day = start_day + timedelta(days=1)
+
+    today_str = now_sp.strftime("%Y-%m-%d")
+
+    url = f"https://api.sofascore.com/api/v1/sport/football/scheduled-events/{today_str}"
 
     headers = {"User-Agent": "Mozilla/5.0"}
 
@@ -25,11 +33,21 @@ def get_today_matches():
 
         for e in data.get("events", []):
 
+            if "startTimestamp" not in e:
+                continue
+
+            utc_time = datetime.fromtimestamp(e["startTimestamp"], tz=timezone.utc)
+            local_time = utc_time.astimezone(SP_TZ)
+
+            if not (start_day <= local_time < end_day):
+                continue
+
             matches.append({
                 "home": e["homeTeam"]["name"],
                 "away": e["awayTeam"]["name"],
                 "home_id": e["homeTeam"]["id"],
-                "away_id": e["awayTeam"]["id"]
+                "away_id": e["awayTeam"]["id"],
+                "time": local_time.strftime("%H:%M")
             })
 
         return matches
@@ -38,7 +56,7 @@ def get_today_matches():
         return []
 
 # =========================
-# HISTÓRICO REAL DO TIME
+# HISTÓRICO DO TIME
 # =========================
 def get_team_last_matches(team_id, n=10):
 
@@ -77,12 +95,12 @@ def build_features(team_id):
     goals_for = np.mean([m[0] for m in matches])
     goals_against = np.mean([m[1] for m in matches])
 
-    form = sum([1 if m[0]>m[1] else 0 for m in matches]) / len(matches)
+    form = sum([1 if m[0] > m[1] else 0 for m in matches]) / len(matches)
 
     return [goals_for, goals_against, form]
 
 # =========================
-# MODELO CALIBRADO
+# MODELO
 # =========================
 def predict(home_feat, away_feat):
 
@@ -121,13 +139,13 @@ def sniper(prob):
     return prob > 0.70 or prob < 0.30
 
 # =========================
-# STREAMLIT
+# STREAMLIT UI
 # =========================
 st.set_page_config(layout="wide")
 
-st.title("📊 Greg Stats X V12 - Scanner REAL")
+st.title("📊 Greg Stats X FINAL - Scanner Profissional")
 
-sniper_mode = st.checkbox("🔥 Modo SNIPER")
+sniper_mode = st.checkbox("🔥 Modo SNIPER (apenas entradas fortes)")
 
 if st.button("📅 Buscar jogos do dia"):
 
@@ -155,6 +173,7 @@ if st.button("📅 Buscar jogos do dia"):
         mk = markets(prob)
 
         rows.append({
+            "Hora": m["time"],
             "Jogo": f"{m['home']} vs {m['away']}",
             "Pick": pick,
             "Confiança": round(prob,2),
@@ -167,6 +186,11 @@ if st.button("📅 Buscar jogos do dia"):
     df = pd.DataFrame(rows)
 
     if not df.empty:
+
+        # ordenar por confiança
+        df = df.sort_values(by="Confiança", ascending=False)
+
         st.dataframe(df, use_container_width=True)
+
     else:
         st.warning("Nenhuma entrada encontrada")
