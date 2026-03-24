@@ -1,54 +1,63 @@
 import streamlit as st
 import requests
 import numpy as np
+import pandas as pd
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
 # =========================
-# FUSO HORÁRIO (SÃO PAULO)
+# TIMEZONE
 # =========================
 SP_TZ = ZoneInfo("America/Sao_Paulo")
 
 # =========================
-# MODELO
+# MODELO AVANÇADO
 # =========================
-class Model:
+class AdvancedModel:
 
     def __init__(self):
-
-        self.weights = np.array([3.0, 2.0, 1.5])
-        self.lr = 0.05
+        self.weights = np.array([2.5, 2.0, 1.5, 1.5, 1.0])
 
     def predict(self, X):
         score = np.dot(X, self.weights)
-        return 1 / (1 + np.exp(-score))
+        prob = 1 / (1 + np.exp(-score))
+        return prob
 
-    def update(self, X, y):
-        pred = self.predict(X)
-        error = y - pred
-        self.weights += self.lr * error * X
-
-
-model = Model()
+model = AdvancedModel()
 
 # =========================
-# FEATURES (AGORA EXPANSÍVEL)
+# FEATURES REAIS (BASE)
 # =========================
-def get_features():
+def get_real_stats(team):
+
+    # ⚠️ Placeholder estruturado (pronto pra API real)
+    return {
+        "xg": np.random.uniform(0.8, 2.2),
+        "shots": np.random.randint(8, 18),
+        "possession": np.random.uniform(40, 65),
+        "corners": np.random.randint(3, 10),
+        "cards": np.random.randint(1, 5)
+    }
+
+def build_features(home, away):
+
+    h = get_real_stats(home)
+    a = get_real_stats(away)
 
     return np.array([
-        np.random.rand(),  # forma
-        np.random.rand(),  # casa/fora
-        np.random.rand()   # consistência
+        h["xg"] - a["xg"],
+        h["shots"] - a["shots"],
+        h["possession"] - a["possession"],
+        h["corners"] - a["corners"],
+        h["cards"] - a["cards"]
     ])
 
 # =========================
-# DATETIME FILTRO CORRETO
+# DATA FILTER (DATA CORRETA)
 # =========================
-def is_today(match_time_utc):
+def is_today(timestamp):
 
-    utc_time = datetime.fromisoformat(match_time_utc.replace("Z", "+00:00"))
-
+    utc_time = datetime.fromtimestamp(timestamp, tz=timezone.utc)
     local_time = utc_time.astimezone(SP_TZ)
 
     now = datetime.now(SP_TZ)
@@ -56,15 +65,13 @@ def is_today(match_time_utc):
     return local_time.date() == now.date()
 
 # =========================
-# SOFASCORE - JOGOS
+# JOGOS DO DIA
 # =========================
 def get_today_matches():
 
-    url = "https://api.sofascore.com/api/v1/sport/football/events/live"
+    url = "https://api.sofascore.com/api/v1/sport/football/scheduled-events/today"
 
-    headers = {
-        "User-Agent": "Mozilla/5.0"
-    }
+    headers = {"User-Agent": "Mozilla/5.0"}
 
     try:
         data = requests.get(url, headers=headers).json()
@@ -73,12 +80,7 @@ def get_today_matches():
 
         for event in data.get("events", []):
 
-            if "startTimestamp" not in event:
-                continue
-
-            start_time = datetime.fromtimestamp(event["startTimestamp"], tz=timezone.utc).isoformat()
-
-            if not is_today(start_time):
+            if not is_today(event["startTimestamp"]):
                 continue
 
             matches.append({
@@ -92,99 +94,67 @@ def get_today_matches():
         return []
 
 # =========================
-# PREVISÃO
+# SNIPER
 # =========================
-def predict_match():
+def sniper(prob):
+    return prob > 0.7 or prob < 0.3
 
-    X = get_features()
+# =========================
+# ANALISE COMPLETA
+# =========================
+def analyze_match(home, away):
 
-    prob = model.predict(X)
+    features = build_features(home, away)
+
+    prob = model.predict(features)
 
     if prob > 0.55:
-        return "HOME", prob
+        pick = home
     elif prob < 0.45:
-        return "AWAY", 1 - prob
+        pick = away
     else:
-        return "NO BET", prob
+        pick = "NO BET"
 
-# =========================
-# OVER / UNDER COM NÚMEROS
-# =========================
-def over_under_analysis(prob):
+    gols = "Over 2.5" if prob > 0.6 else "Under 2.5"
+    cantos = "Over 9.5" if prob > 0.55 else "Under 9.5"
+    cards = "Over 4.5" if prob > 0.55 else "Under 4.5"
 
     return {
-        "gols": "Over 2.5" if prob > 0.6 else "Under 2.5",
-        "cantos": "Over 9.5" if prob > 0.55 else "Under 9.5",
-        "cartoes": "Over 4.5" if prob > 0.55 else "Under 4.5"
+        "Jogo": f"{home} vs {away}",
+        "Pick": pick,
+        "Confiança": round(prob, 2),
+        "Gols": gols,
+        "Cantos": cantos,
+        "Cartões": cards,
+        "Sniper": "🔥" if sniper(prob) else ""
     }
 
 # =========================
-# MODELO SIMPLES DE XG / DADOS REAIS
+# STREAMLIT UI
 # =========================
-def get_real_data_placeholder():
+st.set_page_config(layout="wide")
 
-    return {
-        "xg": np.random.rand(),
-        "shots": np.random.randint(5, 20),
-        "possession": np.random.rand(),
-        "corners": np.random.randint(2, 12),
-        "cards": np.random.randint(1, 8)
-    }
+st.title("📊 Greg Stats X V11 - Scanner Profissional")
 
-# =========================
-# SNIPER FILTER
-# =========================
-def sniper_filter(prob):
-
-    return prob > 0.65 or prob < 0.35
-
-# =========================
-# STREAMLIT
-# =========================
-st.set_page_config(page_title="Greg Stats X V10", layout="wide")
-
-st.title("📊 Greg Stats X V10 - IA + Sniper + Dados Reais")
-
-st.write("🕒 Fuso: America/Sao_Paulo")
-
-sniper_mode = st.checkbox("🔥 Ativar modo SNIPER")
+sniper_mode = st.checkbox("🔥 Apenas SNIPER")
 
 if st.button("📅 Buscar jogos do dia"):
 
     matches = get_today_matches()
 
-    if not matches:
-        st.error("Nenhum jogo encontrado")
-        st.stop()
+    data = []
 
-    for match in matches:
+    for m in matches:
 
-        st.write("-----")
-        st.write(f"⚽ {match['home']} vs {match['away']}")
+        result = analyze_match(m["home"], m["away"])
 
-        result, prob = predict_match()
-
-        over_under = over_under_analysis(prob)
-
-        real_data = get_real_data_placeholder()
-
-        if sniper_mode and not sniper_filter(prob):
+        if sniper_mode and result["Sniper"] == "":
             continue
 
-        if result == "HOME":
-            st.success(f"🔥 APOSTA: {match['home']}")
-        elif result == "AWAY":
-            st.success(f"🔥 APOSTA: {match['away']}")
-        else:
-            st.warning("⚠️ SEM ENTRADA")
+        data.append(result)
 
-        st.write(f"Confiança: {round(prob, 2)}")
-
-        st.write("📊 Over/Under:")
-        st.write(over_under)
-
-        st.write("📈 Dados reais (base futura):")
-        st.write(real_data)
-
-        # aprendizado contínuo
-        model.update(np.array([1,1,1]), 1)
+    if data:
+        df = pd.DataFrame(data)
+        st.dataframe(df, use_container_width=True)
+    else:
+        st.warning("Nenhuma entrada encontrada")
