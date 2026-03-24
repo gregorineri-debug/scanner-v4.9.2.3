@@ -1,6 +1,6 @@
 import streamlit as st
 import requests
-from datetime import datetime
+from datetime import datetime, timedelta
 import pytz
 from statistics import mean
 
@@ -11,7 +11,26 @@ from statistics import mean
 TZ = pytz.timezone("America/Sao_Paulo")
 
 # ==============================
-# FETCH SOFASCORE (SCRAPING REAL)
+# INTERVALO DO DIA (BRASIL)
+# ==============================
+
+def intervalo_hoje():
+    agora = datetime.now(TZ)
+
+    inicio = agora.replace(hour=0, minute=0, second=0, microsecond=0)
+    fim = agora.replace(hour=23, minute=59, second=59, microsecond=999999)
+
+    return inicio, fim
+
+# ==============================
+# CONVERTER TIMESTAMP
+# ==============================
+
+def ajustar_data(timestamp):
+    return datetime.fromtimestamp(timestamp, TZ)
+
+# ==============================
+# BUSCAR JOGOS (SCRAPING REAL)
 # ==============================
 
 def buscar_jogos():
@@ -23,6 +42,8 @@ def buscar_jogos():
         "User-Agent": "Mozilla/5.0"
     }
 
+    inicio, fim = intervalo_hoje()
+
     try:
         r = requests.get(url, headers=headers, timeout=10)
         data = r.json()
@@ -31,12 +52,18 @@ def buscar_jogos():
 
         for e in data.get("events", []):
             try:
+                data_jogo = ajustar_data(e["startTimestamp"])
+
+                # 🔥 FILTRO CORRETO DO DIA (BRASIL)
+                if not (inicio <= data_jogo <= fim):
+                    continue
+
                 jogo = {
                     "id": e["id"],
                     "home": e["homeTeam"]["name"],
                     "away": e["awayTeam"]["name"],
                     "liga": e["tournament"]["name"],
-                    "data": ajustar_data(e["startTimestamp"]),
+                    "data": data_jogo,
                     "home_id": e["homeTeam"]["id"],
                     "away_id": e["awayTeam"]["id"]
                 }
@@ -52,7 +79,7 @@ def buscar_jogos():
         return []
 
 # ==============================
-# FORMA REAL (SCRAPING)
+# FORMA REAL (ÚLTIMOS 5 JOGOS)
 # ==============================
 
 def buscar_forma(team_id):
@@ -75,6 +102,9 @@ def buscar_forma(team_id):
 
                 gols_home = j["homeScore"]["current"]
                 gols_away = j["awayScore"]["current"]
+
+                if gols_home is None or gols_away is None:
+                    continue
 
                 if team_id == home_id:
                     if gols_home > gols_away:
@@ -103,14 +133,11 @@ def buscar_forma(team_id):
 # UTIL
 # ==============================
 
-def ajustar_data(timestamp):
-    return datetime.fromtimestamp(timestamp, TZ)
-
 def safe_mean(lista):
     return mean(lista) if lista else 0
 
 # ==============================
-# MODELO V4.5 PRO
+# MODELO V4.5 (SOMENTE VENCEDOR)
 # ==============================
 
 def analisar_jogo(jogo):
@@ -153,25 +180,25 @@ def gerar_picks():
 
     for j in jogos:
         r = analisar_jogo(j)
-
         if r:
             picks.append(r)
 
+    # ordenar por confiança
     return sorted(picks, key=lambda x: x["score"], reverse=True)
 
 # ==============================
-# UI
+# UI STREAMLIT
 # ==============================
 
 st.set_page_config(page_title="Greg Stats X V4.5 SCRAPER", layout="wide")
 
-st.title("⚽ Greg Stats X V4.5 - 100% Scraping (SofaScore)")
+st.title("⚽ Greg Stats X V4.5 - Scraping PRO (SofaScore)")
 
-if st.button("🚀 Buscar Jogos"):
+if st.button("🚀 Buscar Jogos de Hoje"):
     picks = gerar_picks()
 
     if not picks:
-        st.error("Nenhum jogo encontrado (verifique conexão)")
+        st.error("Nenhum jogo encontrado hoje")
     else:
         st.success(f"{len(picks)} jogos analisados")
 
