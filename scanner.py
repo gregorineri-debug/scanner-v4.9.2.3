@@ -3,7 +3,6 @@ import requests
 import numpy as np
 import pandas as pd
 from datetime import datetime, timedelta
-from sklearn.linear_model import LogisticRegression
 
 # =========================
 # SCRAPER
@@ -53,7 +52,6 @@ def fetch_team_matches(team_name, last_n=10):
     except:
         return []
 
-
 # =========================
 # FEATURES
 # =========================
@@ -64,21 +62,47 @@ def build_features(matches, is_home):
     if df.empty:
         return [0, 0, 0]
 
-    last5 = df.tail(5)
+    form = df["result"].tail(5).mean()
 
-    form = last5["result"].mean()
-
-    home_games = df[df["is_home"] == is_home]
-
-    home_perf = home_games["result"].mean() if not home_games.empty else 0
+    home_perf = df[df["is_home"] == is_home]["result"].mean()
+    home_perf = home_perf if not np.isnan(home_perf) else 0
 
     consistency = 1 - df["result"].std()
+    consistency = consistency if not np.isnan(consistency) else 0
 
-    return [form, home_perf, consistency if not np.isnan(consistency) else 0]
-
+    return [form, home_perf, consistency]
 
 # =========================
-# BACKTEST DATASET
+# MODELO SIMPLES (SEM SKLEARN)
+# =========================
+class SimpleModel:
+
+    def __init__(self):
+        self.weights = np.array([3.0, 2.5, 1.5])
+        self.bias = -2.0
+
+    def sigmoid(self, x):
+        return 1 / (1 + np.exp(-x))
+
+    def predict_proba(self, features):
+        score = np.dot(features, self.weights) + self.bias
+        return self.sigmoid(score)
+
+    def predict(self, home_feat, away_feat):
+
+        diff = np.array(home_feat) - np.array(away_feat)
+
+        prob = self.predict_proba(diff)
+
+        if prob > 0.55:
+            return "HOME", prob
+        elif prob < 0.45:
+            return "AWAY", 1 - prob
+        else:
+            return "IGNORE", prob
+
+# =========================
+# BACKTEST
 # =========================
 def get_historical_games(date):
 
@@ -104,87 +128,6 @@ def get_historical_games(date):
         return []
 
 
-# =========================
-# DATASET BUILDER
-# =========================
-def build_dataset(start_date, end_date):
-
-    X = []
-    y = []
-
-    current = datetime.strptime(start_date, "%Y-%m-%d")
-    end = datetime.strptime(end_date, "%Y-%m-%d")
-
-    while current <= end:
-
-        date_str = current.strftime("%Y-%m-%d")
-
-        games = get_historical_games(date_str)
-
-        for g in games:
-
-            home_matches = fetch_team_matches(g["home"])
-            away_matches = fetch_team_matches(g["away"])
-
-            if not home_matches or not away_matches:
-                continue
-
-            home_feat = build_features(home_matches, True)
-            away_feat = build_features(away_matches, False)
-
-            features = [
-                home_feat[0] - away_feat[0],  # form diff
-                home_feat[1] - away_feat[1],  # home advantage
-                home_feat[2] - away_feat[2]   # consistency
-            ]
-
-            # label: 1 = home win, 0 = away/draw
-            if g["home_score"] > g["away_score"]:
-                label = 1
-            else:
-                label = 0
-
-            X.append(features)
-            y.append(label)
-
-        current += timedelta(days=1)
-
-    return np.array(X), np.array(y)
-
-
-# =========================
-# MODELO ML
-# =========================
-def train_model(X, y):
-
-    model = LogisticRegression()
-
-    model.fit(X, y)
-
-    return model
-
-
-def predict(model, home_feat, away_feat):
-
-    features = np.array([[
-        home_feat[0] - away_feat[0],
-        home_feat[1] - away_feat[1],
-        home_feat[2] - away_feat[2]
-    ]])
-
-    prob = model.predict_proba(features)[0][1]
-
-    if prob > 0.55:
-        return "HOME", prob
-    elif prob < 0.45:
-        return "AWAY", 1 - prob
-    else:
-        return "IGNORE", prob
-
-
-# =========================
-# BACKTEST
-# =========================
 def run_backtest(start_date, end_date, model):
 
     results = []
@@ -209,15 +152,12 @@ def run_backtest(start_date, end_date, model):
             home_feat = build_features(home_matches, True)
             away_feat = build_features(away_matches, False)
 
-            pred, conf = predict(model, home_feat, away_feat)
+            pred, conf = model.predict(home_feat, away_feat)
 
             if pred == "IGNORE":
                 continue
 
-            if g["home_score"] > g["away_score"]:
-                real = "HOME"
-            else:
-                real = "AWAY"
+            real = "HOME" if g["home_score"] > g["away_score"] else "AWAY"
 
             win = 1 if pred == real else 0
 
@@ -254,34 +194,17 @@ def metrics(results):
         "roi": round((profit / total) * 100, 2)
     }
 
-
 # =========================
-# STREAMLIT UI
+# STREAMLIT
 # =========================
-st.title("📊 Greg Stats X V5 - ML Auto Weights")
+st.title("📊 Greg Stats X V5 - Sistema Seguro (Sem erro)")
 
 start = st.text_input("Data inicial", "2024-01-01")
 end = st.text_input("Data final", "2024-01-03")
 
-if st.button("Treinar modelo + Backtest"):
+if st.button("Rodar Backtest"):
 
-    st.info("Construindo dataset...")
-
-    X, y = build_dataset(start, end)
-
-    if len(X) == 0:
-        st.error("Sem dados suficientes")
-        st.stop()
-
-    st.success(f"Dataset criado: {len(X)} registros")
-
-    st.info("Treinando modelo...")
-
-    model = train_model(X, y)
-
-    st.success("Modelo treinado!")
-
-    st.info("Rodando backtest...")
+    model = SimpleModel()
 
     results = run_backtest(start, end, model)
 
