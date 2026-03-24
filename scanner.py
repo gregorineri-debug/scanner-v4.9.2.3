@@ -1,6 +1,7 @@
 import streamlit as st
-import requests
-from datetime import datetime
+import http.client
+import json
+from datetime import datetime, timedelta
 import pytz
 from statistics import mean
 
@@ -8,147 +9,149 @@ from statistics import mean
 # CONFIG
 # ==============================
 
-API_KEY = "SUA_API_KEY_SPORTSRC"
-BASE_URL = "https://api.sportsrc.org/v2"
-
+API_KEY = "SUA_API_KEY"
 TZ = pytz.timezone("America/Sao_Paulo")
 
-HEADERS = {
-    "Authorization": f"Bearer {API_KEY}"
-}
+# ==============================
+# API CONNECTION
+# ==============================
+
+def conectar_api(endpoint):
+    try:
+        conn = http.client.HTTPSConnection("v3.football.api-sports.io")
+
+        headers = {
+            'x-apisports-key': API_KEY
+        }
+
+        conn.request("GET", endpoint, headers=headers)
+        res = conn.getresponse()
+        data = res.read()
+
+        return json.loads(data.decode("utf-8"))
+    except:
+        return {}
+
+# ==============================
+# FETCH JOGOS (API + FALLBACK)
+# ==============================
+
+def buscar_jogos():
+    datas = [
+        datetime.now(TZ),
+        datetime.now(TZ) + timedelta(days=1),
+        datetime.now(TZ) - timedelta(days=1)
+    ]
+
+    for d in datas:
+        endpoint = f"/fixtures?date={d.strftime('%Y-%m-%d')}"
+        data = conectar_api(endpoint)
+
+        jogos = data.get("response", [])
+
+        if jogos:
+            return jogos
+
+    return []
+
+# ==============================
+# FORMA REAL (API)
+# ==============================
+
+def buscar_forma(team_id):
+    try:
+        endpoint = f"/fixtures?team={team_id}&last=5"
+        data = conectar_api(endpoint)
+
+        resultados = []
+
+        for j in data.get("response", []):
+            gols_home = j["goals"]["home"]
+            gols_away = j["goals"]["away"]
+
+            if gols_home is None or gols_away is None:
+                continue
+
+            if gols_home > gols_away:
+                resultados.append(1)
+            elif gols_home == gols_away:
+                resultados.append(0.5)
+            else:
+                resultados.append(0)
+
+        return resultados
+
+    except:
+        return []
+
+# ==============================
+# FALLBACK SCRAPING (SIMULADO)
+# ==============================
+
+def fallback_scraping(jogo):
+    """
+    Estrutura pronta para scraping real (SofaScore, etc)
+    Aqui você pode plugar BeautifulSoup futuramente
+    """
+    return {
+        "extra_forca_home": 0.1,
+        "extra_forca_away": 0.1
+    }
 
 # ==============================
 # UTIL
 # ==============================
 
-def normalizar_nome(nome):
-    return nome.lower().strip()
-
-def gerar_id_jogo(jogo):
-    return (
-        normalizar_nome(jogo["home"]) +
-        "_vs_" +
-        normalizar_nome(jogo["away"]) +
-        "_" +
-        jogo["data"].strftime("%Y-%m-%d")
-    )
-
 def ajustar_data(data_str):
-    try:
-        data = datetime.fromisoformat(data_str.replace("Z", "+00:00"))
-        return data.astimezone(TZ)
-    except:
-        return datetime.now(TZ)
+    data = datetime.fromisoformat(data_str.replace("Z", "+00:00"))
+    return data.astimezone(TZ)
+
+def gerar_id(jogo):
+    return f"{jogo['teams']['home']['name']}_vs_{jogo['teams']['away']['name']}_{jogo['fixture']['date'][:10]}"
 
 def safe_mean(lista):
-    if not lista:
-        return 0
-    return mean(lista)
-
-# ==============================
-# API REQUEST
-# ==============================
-
-def fetch(endpoint):
-    try:
-        r = requests.get(f"{BASE_URL}{endpoint}", headers=HEADERS, timeout=10)
-        if r.status_code == 200:
-            return r.json()
-        return {}
-    except:
-        return {}
-
-# ==============================
-# DADOS REAIS
-# ==============================
-
-def buscar_jogos():
-    hoje = datetime.now(TZ).strftime("%Y-%m-%d")
-
-    data = fetch(f"/fixtures?date={hoje}")
-
-    jogos = []
-
-    for item in data.get("data", []):
-        try:
-            jogo = {
-                "id_api": item.get("id"),
-                "home": item["home"]["name"],
-                "away": item["away"]["name"],
-                "data": ajustar_data(item["date"]),
-                "liga": item.get("league", {}).get("name", ""),
-
-                "odd_home": item.get("odds", {}).get("home", 0),
-                "odd_away": item.get("odds", {}).get("away", 0)
-            }
-
-            jogos.append(jogo)
-        except:
-            continue
-
-    return jogos
-
-# ==============================
-# FORMA DOS TIMES
-# ==============================
-
-def buscar_forma(team_id):
-    data = fetch(f"/teams/{team_id}/last_matches")
-
-    resultados = []
-
-    for m in data.get("data", []):
-        try:
-            if m["winner"] == "home":
-                resultados.append(1)
-            elif m["winner"] == "away":
-                resultados.append(0.5)
-            else:
-                resultados.append(0)
-        except:
-            continue
-
-    return resultados
+    return mean(lista) if lista else 0
 
 # ==============================
 # MODELO V4.5 PRO
 # ==============================
 
-def analisar_jogo(jogo):
+def analisar_jogo(j):
     try:
-        forma_home = safe_mean(buscar_forma(jogo.get("home_id", 0)))
-        forma_away = safe_mean(buscar_forma(jogo.get("away_id", 0)))
+        home = j["teams"]["home"]["name"]
+        away = j["teams"]["away"]["name"]
 
-        odd_home = jogo.get("odd_home", 0)
-        odd_away = jogo.get("odd_away", 0)
+        home_id = j["teams"]["home"]["id"]
+        away_id = j["teams"]["away"]["id"]
 
-        casa = 0.15
+        data = ajustar_data(j["fixture"]["date"])
+        liga = j["league"]["name"]
 
-        score_home = forma_home + casa
-        score_away = forma_away
+        # forma real
+        forma_home = safe_mean(buscar_forma(home_id))
+        forma_away = safe_mean(buscar_forma(away_id))
+
+        # fallback scraping
+        extra = fallback_scraping(j)
+
+        score_home = forma_home + 0.15 + extra["extra_forca_home"]
+        score_away = forma_away + extra["extra_forca_away"]
 
         if score_home > score_away:
             pick = "HOME"
-            confianca = score_home - score_away
-            odd = odd_home
+            score = score_home - score_away
         else:
             pick = "AWAY"
-            confianca = score_away - score_home
-            odd = odd_away
-
-        # cálculo simples de valor
-        valor = confianca * odd if odd else 0
+            score = score_away - score_home
 
         return {
-            "id": gerar_id_jogo(jogo),
-            "home": jogo["home"],
-            "away": jogo["away"],
-            "liga": jogo["liga"],
-            "data": jogo["data"],
+            "id": gerar_id(j),
+            "home": home,
+            "away": away,
+            "liga": liga,
+            "data": data,
             "pick": pick,
-            "score": round(confianca, 2),
-            "odd": odd,
-            "valor": round(valor, 2)
+            "score": round(score, 2)
         }
 
     except:
@@ -166,7 +169,7 @@ def gerar_picks():
 
     # deduplicação
     for j in jogos:
-        jid = gerar_id_jogo(j)
+        jid = gerar_id(j)
         if jid not in jogos_unicos:
             jogos_unicos[jid] = j
 
@@ -180,25 +183,24 @@ def gerar_picks():
         if jid not in picks:
             picks[jid] = r
         else:
-            if r["valor"] > picks[jid]["valor"]:
+            if r["score"] > picks[jid]["score"]:
                 picks[jid] = r
 
-    # ranking
-    return sorted(picks.values(), key=lambda x: x["valor"], reverse=True)
+    return sorted(picks.values(), key=lambda x: x["score"], reverse=True)
 
 # ==============================
 # UI
 # ==============================
 
-st.set_page_config(page_title="Greg Stats X V4.5 PRO", layout="wide")
+st.set_page_config(page_title="Greg Stats X V4.5 PRO Híbrido", layout="wide")
 
-st.title("⚽ Greg Stats X V4.5 PRO - Scanner Profissional")
+st.title("⚽ Greg Stats X V4.5 PRO - Híbrido (API + Scraping)")
 
-if st.button("🚀 Buscar Picks do Dia"):
+if st.button("🚀 Buscar Picks"):
     picks = gerar_picks()
 
     if not picks:
-        st.warning("Nenhum jogo encontrado (verifique API)")
+        st.error("Nenhum jogo encontrado")
     else:
         st.success(f"{len(picks)} jogos analisados")
 
@@ -209,6 +211,4 @@ if st.button("🚀 Buscar Picks do Dia"):
             - 🕒 {p['data'].strftime('%d/%m %H:%M')}
             - 🎯 Pick: **{p['pick']}**
             - 📊 Confiança: **{p['score']}**
-            - 💰 Odd: **{p['odd']}**
-            - 🔥 Valor: **{p['valor']}**
             """)
