@@ -2,10 +2,15 @@ import streamlit as st
 import requests
 import numpy as np
 import pandas as pd
-from datetime import datetime, timedelta
 
 # =========================
-# SCRAPER
+# CONFIG
+# =========================
+ODDS_API_KEY = "SUA_API_KEY_AQUI"
+SPORT = "soccer"
+
+# =========================
+# SCRAPER (TIME)
 # =========================
 def get_team_id(team_name):
     try:
@@ -64,35 +69,81 @@ def build_features(matches, is_home):
 
     form = df["result"].tail(5).mean()
 
-    home_perf = df[df["is_home"] == is_home]["result"].mean()
-    home_perf = home_perf if not np.isnan(home_perf) else 0
+    home_games = df[df["is_home"] == is_home]
+    home_perf = home_games["result"].mean() if not home_games.empty else 0
 
     consistency = 1 - df["result"].std()
-    consistency = consistency if not np.isnan(consistency) else 0
+    if np.isnan(consistency):
+        consistency = 0
 
     return [form, home_perf, consistency]
 
 # =========================
-# MODELO SIMPLES (SEM SKLEARN)
+# ODDS API
 # =========================
-class SimpleModel:
+def get_odds(home, away):
+
+    url = f"https://api.the-odds-api.com/v4/sports/{SPORT}/odds/"
+
+    params = {
+        "apiKey": ODDS_API_KEY,
+        "regions": "eu",
+        "markets": "h2h,totals",
+        "oddsFormat": "decimal"
+    }
+
+    try:
+        response = requests.get(url, params=params).json()
+
+        for event in response:
+
+            if home.lower() in event["home_team"].lower() and away.lower() in event["away_team"].lower():
+
+                bookmakers = event["bookmakers"][0]["markets"]
+
+                odds = {}
+
+                for market in bookmakers:
+
+                    if market["key"] == "h2h":
+                        outcomes = market["outcomes"]
+
+                        for o in outcomes:
+                            if o["name"] == event["home_team"]:
+                                odds["home"] = o["price"]
+                            elif o["name"] == event["away_team"]:
+                                odds["away"] = o["price"]
+
+                    if market["key"] == "totals":
+                        odds["over_under"] = market["outcomes"][0]["price"]
+
+                return odds
+
+    except:
+        pass
+
+    return {"home": 2.0, "away": 2.0, "over_under": 2.0}
+
+# =========================
+# MODELO COM AUTO APRENDIZADO
+# =========================
+class AdaptiveModel:
 
     def __init__(self):
+
         self.weights = np.array([3.0, 2.5, 1.5])
-        self.bias = -2.0
+        self.lr = 0.1  # learning rate
 
-    def sigmoid(self, x):
-        return 1 / (1 + np.exp(-x))
-
-    def predict_proba(self, features):
-        score = np.dot(features, self.weights) + self.bias
-        return self.sigmoid(score)
+    def predict_score(self, features):
+        return np.dot(features, self.weights)
 
     def predict(self, home_feat, away_feat):
 
         diff = np.array(home_feat) - np.array(away_feat)
 
-        prob = self.predict_proba(diff)
+        score = self.predict_score(diff)
+
+        prob = 1 / (1 + np.exp(-score))  # sigmoid
 
         if prob > 0.55:
             return "HOME", prob
@@ -101,119 +152,83 @@ class SimpleModel:
         else:
             return "IGNORE", prob
 
+    def update(self, features, target):
+
+        pred = self.predict_score(features)
+        prob = 1 / (1 + np.exp(-pred))
+
+        error = target - prob
+
+        # ajuste dos pesos
+        self.weights += self.lr * error * features
+
 # =========================
-# BACKTEST
+# EV (EXPECTED VALUE)
 # =========================
-def get_historical_games(date):
-
-    url = f"https://api.sofascore.com/api/v1/sport/football/scheduled-events/{date}"
-
-    try:
-        data = requests.get(url).json()
-
-        games = []
-
-        for e in data.get("events", []):
-
-            games.append({
-                "home": e["homeTeam"]["name"],
-                "away": e["awayTeam"]["name"],
-                "home_score": e["homeScore"].get("current", 0),
-                "away_score": e["awayScore"].get("current", 0)
-            })
-
-        return games
-
-    except:
-        return []
-
-
-def run_backtest(start_date, end_date, model):
-
-    results = []
-
-    current = datetime.strptime(start_date, "%Y-%m-%d")
-    end = datetime.strptime(end_date, "%Y-%m-%d")
-
-    while current <= end:
-
-        date_str = current.strftime("%Y-%m-%d")
-
-        games = get_historical_games(date_str)
-
-        for g in games:
-
-            home_matches = fetch_team_matches(g["home"])
-            away_matches = fetch_team_matches(g["away"])
-
-            if not home_matches or not away_matches:
-                continue
-
-            home_feat = build_features(home_matches, True)
-            away_feat = build_features(away_matches, False)
-
-            pred, conf = model.predict(home_feat, away_feat)
-
-            if pred == "IGNORE":
-                continue
-
-            real = "HOME" if g["home_score"] > g["away_score"] else "AWAY"
-
-            win = 1 if pred == real else 0
-
-            profit = 1 if win else -1
-
-            results.append({
-                "game": f"{g['home']} vs {g['away']}",
-                "pred": pred,
-                "real": real,
-                "win": win,
-                "profit": profit,
-                "confidence": round(conf, 2)
-            })
-
-        current += timedelta(days=1)
-
-    return results
-
-
-def metrics(results):
-
-    total = len(results)
-
-    if total == 0:
-        return {}
-
-    wins = sum(r["win"] for r in results)
-    profit = sum(r["profit"] for r in results)
-
-    return {
-        "total": total,
-        "win_rate": round(wins / total * 100, 2),
-        "profit": profit,
-        "roi": round((profit / total) * 100, 2)
-    }
+def expected_value(prob, odds):
+    return (prob * odds) - 1
 
 # =========================
 # STREAMLIT
 # =========================
-st.title("📊 Greg Stats X V5 - Sistema Seguro (Sem erro)")
+st.title("📊 Greg Stats X V5 - PRO MODE")
 
-start = st.text_input("Data inicial", "2024-01-01")
-end = st.text_input("Data final", "2024-01-03")
+model = AdaptiveModel()
 
-if st.button("Rodar Backtest"):
+st.subheader("🎯 Análise")
 
-    model = SimpleModel()
+home = st.text_input("Time casa")
+away = st.text_input("Time visitante")
 
-    results = run_backtest(start, end, model)
+if st.button("Analisar"):
 
-    m = metrics(results)
+    home_matches = fetch_team_matches(home)
+    away_matches = fetch_team_matches(away)
 
-    st.write("### Métricas")
-    st.json(m)
+    if not home_matches or not away_matches:
+        st.error("Erro ao buscar dados")
+        st.stop()
 
-    st.write("### Resultados")
+    home_feat = build_features(home_matches, True)
+    away_feat = build_features(away_matches, False)
 
-    df = pd.DataFrame(results)
-    st.dataframe(df)
+    prediction, prob = model.predict(home_feat, away_feat)
+
+    odds = get_odds(home, away)
+
+    ev_home = expected_value(prob, odds["home"])
+    ev_away = expected_value(1 - prob, odds["away"])
+
+    st.write("### 📈 Resultado")
+
+    st.write(f"Predição: **{prediction}**")
+    st.write(f"Confiança: {round(prob, 2)}")
+
+    st.write("### 💰 Odds")
+
+    st.write(odds)
+
+    st.write("### 📊 EV")
+
+    st.write(f"EV Casa: {round(ev_home, 2)}")
+    st.write(f"EV Visitante: {round(ev_away, 2)}")
+
+    st.write("### 🎯 Multi-market (base)")
+
+    st.write("✔ Vitória (H2H)")
+    st.write("✔ Over/Under (em evolução)")
+
+# =========================
+# AUTO LEARNING SIMPLES
+# =========================
+st.subheader("🧠 Auto Aprendizado (manual por enquanto)")
+
+if st.button("Simular aprendizado"):
+
+    # simulação de aprendizado
+    model.update(np.array([1,1,1]), 1)
+
+    st.success("Pesos atualizados automaticamente!")
+
+    st.write("Pesos atuais:")
+    st.write(model.weights)
