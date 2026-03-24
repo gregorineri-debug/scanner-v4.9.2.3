@@ -11,12 +11,6 @@ import pandas as pd
 
 TZ = pytz.timezone("America/Sao_Paulo")
 
-# 🔗 MAPA FBREF (VOCÊ VAI EXPANDIR)
-TEAM_URLS = {
-    # exemplos (adicione conforme for usando)
-    # "Palmeiras": "https://fbref.com/en/squads/XXXX/",
-}
-
 # ==============================
 # INTERVALO DO DIA
 # ==============================
@@ -117,16 +111,35 @@ def buscar_forma(team_id):
         return []
 
 # ==============================
-# xG (FBREF)
+# xG AUTOMÁTICO (FBREF)
 # ==============================
 
-def get_xg(team_name):
-    url = TEAM_URLS.get(team_name)
-
-    if not url:
-        return 0  # sem dado → neutro
-
+def buscar_url_fbref(team_name):
     try:
+        search_name = team_name.replace(" ", "+")
+        url = f"https://fbref.com/en/search/search.fcgi?search={search_name}"
+
+        res = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
+
+        tables = pd.read_html(res.text)
+
+        for table in tables:
+            if "Squad" in table.columns:
+                return table.iloc[0]["Squad"]
+
+        return None
+
+    except:
+        return None
+
+
+def get_xg(team_name):
+    try:
+        url = buscar_url_fbref(team_name)
+
+        if not url:
+            return 0
+
         res = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
         tables = pd.read_html(res.text)
 
@@ -169,11 +182,9 @@ def analisar_jogo(jogo):
         forma_home = safe_mean(buscar_forma(jogo["home_id"]))
         forma_away = safe_mean(buscar_forma(jogo["away_id"]))
 
-        # xG
         xg_home = get_xg(jogo["home"])
         xg_away = get_xg(jogo["away"])
 
-        # pesos
         casa = 0.15
         peso_xg = 0.35
 
@@ -219,9 +230,9 @@ def gerar_picks():
 # UI
 # ==============================
 
-st.set_page_config(page_title="Greg Stats X V4.5 + xG", layout="wide")
+st.set_page_config(page_title="Greg Stats X V4.5 + xG AUTO", layout="wide")
 
-st.title("⚽ Greg Stats X V4.5 + xG (PRO)")
+st.title("⚽ Greg Stats X V4.5 + xG Automático")
 
 if st.button("🚀 Buscar Jogos de Hoje"):
     picks = gerar_picks()
