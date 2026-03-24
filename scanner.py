@@ -1,261 +1,185 @@
 import streamlit as st
 import requests
-import numpy as np
-import pandas as pd
-from datetime import datetime, timedelta, timezone
-from zoneinfo import ZoneInfo
+from datetime import datetime, timedelta
+import pytz
+from statistics import mean
 
-# =========================
+# ==============================
 # CONFIG
-# =========================
-API_KEY = "SUA_API_KEY_FOOTYSTATS"
-SP_TZ = ZoneInfo("America/Sao_Paulo")
+# ==============================
 
-# =========================
-# JOGOS DO DIA (SOFASCORE)
-# =========================
-def get_today_matches():
+TZ = pytz.timezone("America/Sao_Paulo")
 
-    headers = {"User-Agent": "Mozilla/5.0"}
+# ==============================
+# NORMALIZAÇÃO
+# ==============================
 
-    matches = []
+def normalizar_nome(nome):
+    return nome.lower().strip()
 
-    # 🔥 busca 2 dias para garantir cobertura
-    dates_to_check = []
+def gerar_id_jogo(jogo):
+    return (
+        normalizar_nome(jogo["home"]) +
+        "_vs_" +
+        normalizar_nome(jogo["away"]) +
+        "_" +
+        jogo["data"].strftime("%Y-%m-%d")
+    )
 
-    now_sp = datetime.now(SP_TZ)
+# ==============================
+# TIME RANGE (CORRIGIDO)
+# ==============================
 
-    for i in [-1, 0, 1]:
-        d = (now_sp + timedelta(days=i)).strftime("%Y-%m-%d")
-        dates_to_check.append(d)
+def obter_intervalo_hoje():
+    agora = datetime.now(TZ)
+    inicio = agora.replace(hour=0, minute=0, second=0, microsecond=0)
+    fim = agora.replace(hour=23, minute=59, second=59, microsecond=999999)
+    return inicio, fim
 
-    # 🔥 janela exata do dia em SP
-    start_day = now_sp.replace(hour=0, minute=0, second=0, microsecond=0)
-    end_day = start_day + timedelta(days=1)
+# ==============================
+# FETCH DADOS (MOCK / ESTRUTURA)
+# ==============================
 
-    try:
-        for date_str in dates_to_check:
+def buscar_sofascore():
+    return []
 
-            url = f"https://api.sofascore.com/api/v1/sport/football/scheduled-events/{date_str}"
-            data = requests.get(url, headers=headers).json()
+def buscar_footystats():
+    return []
 
-            for e in data.get("events", []):
+def buscar_fbref():
+    return []
 
-                if "startTimestamp" not in e:
-                    continue
+# ==============================
+# FILTRO DATA
+# ==============================
 
-                # UTC → datetime
-                utc_time = datetime.fromtimestamp(e["startTimestamp"], tz=timezone.utc)
+def filtrar_por_data(jogos):
+    inicio, fim = obter_intervalo_hoje()
+    filtrados = []
 
-                # SP timezone
-                local_time = utc_time.astimezone(SP_TZ)
+    for j in jogos:
+        if inicio <= j["data"] <= fim:
+            filtrados.append(j)
 
-                # 🔥 FILTRO DEFINITIVO
-                if not (start_day <= local_time < end_day):
-                    continue
+    return filtrados
 
-                matches.append({
-                    "home": e["homeTeam"]["name"],
-                    "away": e["awayTeam"]["name"],
-                    "home_id": e["homeTeam"]["id"],
-                    "away_id": e["awayTeam"]["id"],
-                    "time": local_time.strftime("%H:%M")
+# ==============================
+# DEDUPLICAÇÃO
+# ==============================
+
+def consolidar_jogos():
+    fontes = [buscar_sofascore, buscar_footystats, buscar_fbref]
+    jogos_unicos = {}
+
+    for fonte in fontes:
+        jogos = fonte()
+        jogos = filtrar_por_data(jogos)
+
+        for jogo in jogos:
+            jogo_id = gerar_id_jogo(jogo)
+
+            if jogo_id not in jogos_unicos:
+                jogos_unicos[jogo_id] = jogo
+            else:
+                # MERGE SIMPLES (prioridade: dados existentes + novos)
+                jogos_unicos[jogo_id].update({
+                    k: v for k, v in jogo.items() if v is not None
                 })
 
-        return matches
+    return jogos_unicos
 
-    except:
-        return []
+# ==============================
+# SEGURANÇA ESTATÍSTICA
+# ==============================
 
-# =========================
-# FOOTYSTATS (PRIORIDADE 1)
-# =========================
-def get_footystats(team_id):
+def safe_mean(lista):
+    if not lista or len(lista) == 0:
+        return 0
+    return mean(lista)
 
+# ==============================
+# MODELO V4.5 (SOMENTE VENCEDOR)
+# ==============================
+
+def analisar_jogo(jogo):
     try:
-        url = f"https://api.footystats.org/team-stats?key={API_KEY}&team_id={team_id}"
-        data = requests.get(url).json()["data"]
+        forma_home = safe_mean(jogo.get("forma_home", []))
+        forma_away = safe_mean(jogo.get("forma_away", []))
+
+        forca_home = jogo.get("forca_home", 0)
+        forca_away = jogo.get("forca_away", 0)
+
+        casa = jogo.get("casa", 0.1)  # leve vantagem casa
+
+        score_home = forma_home + forca_home + casa
+        score_away = forma_away + forca_away
+
+        if score_home > score_away:
+            pick = "HOME"
+            score = score_home - score_away
+        else:
+            pick = "AWAY"
+            score = score_away - score_home
 
         return {
-            "xg": data.get("xg_for"),
-            "xg_against": data.get("xg_against"),
-            "goals_for": data.get("avg_goals_for"),
-            "goals_against": data.get("avg_goals_against"),
-            "corners": data.get("corners_avg"),
-            "cards": data.get("cards_avg")
+            "id": gerar_id_jogo(jogo),
+            "home": jogo["home"],
+            "away": jogo["away"],
+            "liga": jogo.get("liga", ""),
+            "data": jogo["data"],
+            "pick": pick,
+            "score": round(score, 2)
         }
 
-    except:
+    except Exception as e:
         return None
 
-# =========================
-# FBREF (PRIORIDADE 2)
-# =========================
-def get_fbref(team_name):
+# ==============================
+# BLOQUEIO DE DUPLICIDADE FINAL
+# ==============================
 
-    # ⚠️ Placeholder estruturado (pronto para scraping real)
-    try:
-        return {
-            "xg": np.random.uniform(1.0, 2.0),
-            "xg_against": np.random.uniform(1.0, 2.0),
-            "goals_for": np.random.uniform(1.0, 2.0),
-            "goals_against": np.random.uniform(1.0, 2.0),
-            "corners": np.random.uniform(4, 8),
-            "cards": np.random.uniform(1, 4)
-        }
-    except:
-        return None
+def gerar_picks():
+    jogos = consolidar_jogos()
+    picks = {}
 
-# =========================
-# SOFASCORE (PRIORIDADE 3)
-# =========================
-def get_sofascore(team_id):
+    for jogo_id, jogo in jogos.items():
+        resultado = analisar_jogo(jogo)
 
-    try:
-        url = f"https://api.sofascore.com/api/v1/team/{team_id}/events/last/5"
-        data = requests.get(url).json()
-
-        goals_for = []
-        goals_against = []
-
-        for e in data.get("events", []):
-
-            home = e["homeScore"]["current"]
-            away = e["awayScore"]["current"]
-
-            if home is None or away is None:
-                continue
-
-            goals_for.append(home)
-            goals_against.append(away)
-
-        return {
-            "goals_for": np.mean(goals_for) if goals_for else 1.2,
-            "goals_against": np.mean(goals_against) if goals_against else 1.2,
-            "xg": None,
-            "xg_against": None,
-            "corners": 5,
-            "cards": 2
-        }
-
-    except:
-        return None
-
-# =========================
-# COMBINADOR INTELIGENTE
-# =========================
-def get_team_data(team_id, team_name):
-
-    data = get_footystats(team_id)
-
-    if data and data["xg"]:
-        return data
-
-    data = get_fbref(team_name)
-
-    if data:
-        return data
-
-    data = get_sofascore(team_id)
-
-    if data:
-        return data
-
-    # fallback final
-    return {
-        "xg": 1.2,
-        "xg_against": 1.2,
-        "goals_for": 1.2,
-        "goals_against": 1.2,
-        "corners": 5,
-        "cards": 2
-    }
-
-# =========================
-# MODELO PROFISSIONAL
-# =========================
-def predict(home, away):
-
-    attack = home["xg"] - away["xg_against"]
-    defense = away["xg"] - home["xg_against"]
-    goals = home["goals_for"] - away["goals_against"]
-
-    score = (attack * 2.5) + (goals * 2.0) - (defense * 1.5)
-
-    prob = 1 / (1 + np.exp(-score))
-
-    if prob > 0.60:
-        pick = "HOME"
-    elif prob < 0.40:
-        pick = "AWAY"
-    else:
-        pick = "NO BET"
-
-    return pick, prob
-
-# =========================
-# MERCADOS DINÂMICOS
-# =========================
-def markets(home, away):
-
-    gols = home["goals_for"] + away["goals_for"]
-    cantos = home["corners"] + away["corners"]
-    cards = home["cards"] + away["cards"]
-
-    return {
-        "Gols": f"Over {round(gols,1)}",
-        "Cantos": f"Over {round(cantos,1)}",
-        "Cartões": f"Over {round(cards,1)}"
-    }
-
-# =========================
-# SNIPER
-# =========================
-def sniper(prob):
-    return prob > 0.70 or prob < 0.30
-
-# =========================
-# STREAMLIT
-# =========================
-st.set_page_config(layout="wide")
-
-st.title("📊 Greg Stats X PRO - Multi Fonte")
-
-sniper_mode = st.checkbox("🔥 Apenas SNIPER")
-
-if st.button("📅 Buscar jogos do dia"):
-
-    matches = get_today_matches()
-
-    rows = []
-
-    for m in matches:
-
-        home = get_team_data(m["home_id"], m["home"])
-        away = get_team_data(m["away_id"], m["away"])
-
-        pick, prob = predict(home, away)
-
-        if sniper_mode and not sniper(prob):
+        if not resultado:
             continue
 
-        mk = markets(home, away)
+        if jogo_id not in picks:
+            picks[jogo_id] = resultado
+        else:
+            existente = picks[jogo_id]
 
-        rows.append({
-            "Hora": m["time"],
-            "Jogo": f"{m['home']} vs {m['away']}",
-            "Pick": pick,
-            "Confiança": round(prob,2),
-            "Gols": mk["Gols"],
-            "Cantos": mk["Cantos"],
-            "Cartões": mk["Cartões"],
-            "Sniper": "🔥" if sniper(prob) else ""
-        })
+            # mantém maior confiança
+            if resultado["score"] > existente["score"]:
+                picks[jogo_id] = resultado
 
-    df = pd.DataFrame(rows)
+    return list(picks.values())
 
-    if not df.empty:
-        df = df.sort_values(by="Confiança", ascending=False)
-        st.dataframe(df, use_container_width=True)
+# ==============================
+# UI STREAMLIT
+# ==============================
+
+st.set_page_config(page_title="Greg Stats X V4.5", layout="wide")
+
+st.title("⚽ Greg Stats X V4.5 - Scanner de Valor")
+
+if st.button("🔍 Buscar Jogos do Dia"):
+    picks = gerar_picks()
+
+    if not picks:
+        st.warning("Nenhum jogo encontrado.")
     else:
-        st.warning("Nenhuma entrada encontrada")
+        st.success(f"{len(picks)} jogos analisados")
+
+        for p in picks:
+            st.markdown(f"""
+            ### {p['home']} vs {p['away']}
+            - 🏆 Liga: {p['liga']}
+            - 🕒 Data: {p['data'].strftime('%d/%m %H:%M')}
+            - 🎯 Pick: **{p['pick']}**
+            - 📊 Confiança: **{p['score']}**
+            """)
