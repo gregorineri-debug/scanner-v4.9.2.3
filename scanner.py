@@ -1,37 +1,13 @@
 import streamlit as st
 import requests
-import sqlite3
-from datetime import datetime
+import numpy as np
+import pandas as pd
+from datetime import datetime, timedelta
+from sklearn.linear_model import LogisticRegression
 
-# ==================================================
-# BANCO DE DADOS
-# ==================================================
-DB_PATH = "betting.db"
-
-def get_conn():
-    return sqlite3.connect(DB_PATH)
-
-def init_db():
-    conn = get_conn()
-    c = conn.cursor()
-
-    c.execute("""
-    CREATE TABLE IF NOT EXISTS games (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        home TEXT,
-        away TEXT,
-        league TEXT,
-        date TEXT
-    )
-    """)
-
-    conn.commit()
-    conn.close()
-
-
-# ==================================================
-# SCRAPER (SOFASCORE)
-# ==================================================
+# =========================
+# SCRAPER
+# =========================
 def get_team_id(team_name):
     try:
         url = f"https://api.sofascore.com/api/v1/search/all?q={team_name}"
@@ -40,11 +16,8 @@ def get_team_id(team_name):
         for item in data.get("results", []):
             if item.get("type") == "team":
                 return item["entity"]["id"]
-
     except:
-        pass
-
-    return None
+        return None
 
 
 def fetch_team_matches(team_name, last_n=10):
@@ -59,22 +32,20 @@ def fetch_team_matches(team_name, last_n=10):
 
         matches = []
 
-        for event in data.get("events", []):
+        for e in data.get("events", []):
 
-            is_home = event["homeTeam"]["name"] == team_name
+            is_home = e["homeTeam"]["name"] == team_name
 
-            # resultado
-            if event["winnerCode"] == 1:
-                result = "W" if is_home else "L"
-            elif event["winnerCode"] == 2:
-                result = "L" if is_home else "W"
+            if e["winnerCode"] == 1:
+                result = 1 if is_home else 0
+            elif e["winnerCode"] == 2:
+                result = 0 if is_home else 1
             else:
-                result = "D"
+                result = 0.5
 
             matches.append({
                 "result": result,
-                "is_home": is_home,
-                "opponent_position": 10  # fallback (melhorar depois)
+                "is_home": is_home
             })
 
         return matches
@@ -83,221 +54,243 @@ def fetch_team_matches(team_name, last_n=10):
         return []
 
 
-# ==================================================
-# FEATURES REAIS
-# ==================================================
-def calculate_form(matches):
-    last = matches[-5:]
-    points = 0
-
-    for m in last:
-        if m["result"] == "W":
-            points += 3
-        elif m["result"] == "D":
-            points += 1
-
-    return round((points / 15) * 3, 2) if last else 0
-
-
-def calculate_home_away(matches, is_home):
-    filtered = [m for m in matches if m["is_home"] == is_home]
-
-    if not filtered:
-        return 0
-
-    points = 0
-
-    for m in filtered:
-        if m["result"] == "W":
-            points += 3
-        elif m["result"] == "D":
-            points += 1
-
-    return round((points / (len(filtered) * 3)) * 2.5, 2)
-
-
-def calculate_opponent_strength(matches):
-    weights = []
-
-    for m in matches:
-        pos = m["opponent_position"]
-
-        if pos <= 3:
-            weights.append(1.5)
-        elif pos <= 10:
-            weights.append(1.0)
-        elif pos <= 15:
-            weights.append(0.5)
-        else:
-            weights.append(0)
-
-    return round(sum(weights) / len(weights), 2) if weights else 0
-
-
-def calculate_consistency(matches):
-    last = matches[-5:]
-
-    if len(last) < 2:
-        return 0
-
-    results = [m["result"] for m in last]
-
-    changes = sum(
-        1 for i in range(1, len(results)) if results[i] != results[i - 1]
-    )
-
-    return round(1 - (changes / len(results)), 2)
-
-
+# =========================
+# FEATURES
+# =========================
 def build_features(matches, is_home):
+
+    df = pd.DataFrame(matches)
+
+    if df.empty:
+        return [0, 0, 0]
+
+    last5 = df.tail(5)
+
+    form = last5["result"].mean()
+
+    home_games = df[df["is_home"] == is_home]
+
+    home_perf = home_games["result"].mean() if not home_games.empty else 0
+
+    consistency = 1 - df["result"].std()
+
+    return [form, home_perf, consistency if not np.isnan(consistency) else 0]
+
+
+# =========================
+# BACKTEST DATASET
+# =========================
+def get_historical_games(date):
+
+    url = f"https://api.sofascore.com/api/v1/sport/football/scheduled-events/{date}"
+
+    try:
+        data = requests.get(url).json()
+
+        games = []
+
+        for e in data.get("events", []):
+
+            games.append({
+                "home": e["homeTeam"]["name"],
+                "away": e["awayTeam"]["name"],
+                "home_score": e["homeScore"].get("current", 0),
+                "away_score": e["awayScore"].get("current", 0)
+            })
+
+        return games
+
+    except:
+        return []
+
+
+# =========================
+# DATASET BUILDER
+# =========================
+def build_dataset(start_date, end_date):
+
+    X = []
+    y = []
+
+    current = datetime.strptime(start_date, "%Y-%m-%d")
+    end = datetime.strptime(end_date, "%Y-%m-%d")
+
+    while current <= end:
+
+        date_str = current.strftime("%Y-%m-%d")
+
+        games = get_historical_games(date_str)
+
+        for g in games:
+
+            home_matches = fetch_team_matches(g["home"])
+            away_matches = fetch_team_matches(g["away"])
+
+            if not home_matches or not away_matches:
+                continue
+
+            home_feat = build_features(home_matches, True)
+            away_feat = build_features(away_matches, False)
+
+            features = [
+                home_feat[0] - away_feat[0],  # form diff
+                home_feat[1] - away_feat[1],  # home advantage
+                home_feat[2] - away_feat[2]   # consistency
+            ]
+
+            # label: 1 = home win, 0 = away/draw
+            if g["home_score"] > g["away_score"]:
+                label = 1
+            else:
+                label = 0
+
+            X.append(features)
+            y.append(label)
+
+        current += timedelta(days=1)
+
+    return np.array(X), np.array(y)
+
+
+# =========================
+# MODELO ML
+# =========================
+def train_model(X, y):
+
+    model = LogisticRegression()
+
+    model.fit(X, y)
+
+    return model
+
+
+def predict(model, home_feat, away_feat):
+
+    features = np.array([[
+        home_feat[0] - away_feat[0],
+        home_feat[1] - away_feat[1],
+        home_feat[2] - away_feat[2]
+    ]])
+
+    prob = model.predict_proba(features)[0][1]
+
+    if prob > 0.55:
+        return "HOME", prob
+    elif prob < 0.45:
+        return "AWAY", 1 - prob
+    else:
+        return "IGNORE", prob
+
+
+# =========================
+# BACKTEST
+# =========================
+def run_backtest(start_date, end_date, model):
+
+    results = []
+
+    current = datetime.strptime(start_date, "%Y-%m-%d")
+    end = datetime.strptime(end_date, "%Y-%m-%d")
+
+    while current <= end:
+
+        date_str = current.strftime("%Y-%m-%d")
+
+        games = get_historical_games(date_str)
+
+        for g in games:
+
+            home_matches = fetch_team_matches(g["home"])
+            away_matches = fetch_team_matches(g["away"])
+
+            if not home_matches or not away_matches:
+                continue
+
+            home_feat = build_features(home_matches, True)
+            away_feat = build_features(away_matches, False)
+
+            pred, conf = predict(model, home_feat, away_feat)
+
+            if pred == "IGNORE":
+                continue
+
+            if g["home_score"] > g["away_score"]:
+                real = "HOME"
+            else:
+                real = "AWAY"
+
+            win = 1 if pred == real else 0
+
+            profit = 1 if win else -1
+
+            results.append({
+                "game": f"{g['home']} vs {g['away']}",
+                "pred": pred,
+                "real": real,
+                "win": win,
+                "profit": profit,
+                "confidence": round(conf, 2)
+            })
+
+        current += timedelta(days=1)
+
+    return results
+
+
+def metrics(results):
+
+    total = len(results)
+
+    if total == 0:
+        return {}
+
+    wins = sum(r["win"] for r in results)
+    profit = sum(r["profit"] for r in results)
+
     return {
-        "form": calculate_form(matches),
-        "home_away": calculate_home_away(matches, is_home),
-        "opponent_strength": calculate_opponent_strength(matches),
-        "consistency": calculate_consistency(matches)
+        "total": total,
+        "win_rate": round(wins / total * 100, 2),
+        "profit": profit,
+        "roi": round((profit / total) * 100, 2)
     }
 
 
-# ==================================================
-# MODELO GREG STATS V4.5
-# ==================================================
-class GregStatsV45:
+# =========================
+# STREAMLIT UI
+# =========================
+st.title("📊 Greg Stats X V5 - ML Auto Weights")
 
-    def __init__(self):
-        self.weights = {
-            "form": 3.0,
-            "home_away": 2.5,
-            "opponent_strength": 2.0,
-            "consistency": 1.5
-        }
+start = st.text_input("Data inicial", "2024-01-01")
+end = st.text_input("Data final", "2024-01-03")
 
-    def score(self, f):
-        return (
-            f["form"] * self.weights["form"] +
-            f["home_away"] * self.weights["home_away"] +
-            f["opponent_strength"] * self.weights["opponent_strength"] +
-            f["consistency"] * self.weights["consistency"]
-        )
+if st.button("Treinar modelo + Backtest"):
 
-    def predict(self, home_f, away_f):
+    st.info("Construindo dataset...")
 
-        home = self.score(home_f)
-        away = self.score(away_f)
+    X, y = build_dataset(start, end)
 
-        diff = abs(home - away)
+    if len(X) == 0:
+        st.error("Sem dados suficientes")
+        st.stop()
 
-        if diff < 2:
-            return {"status": "IGNORE"}
+    st.success(f"Dataset criado: {len(X)} registros")
 
-        if home > away:
-            winner = "HOME"
-            score = home
-        else:
-            winner = "AWAY"
-            score = away
+    st.info("Treinando modelo...")
 
-        confidence = score / (home + away)
+    model = train_model(X, y)
 
-        if score < 5:
-            return {"status": "IGNORE"}
+    st.success("Modelo treinado!")
 
-        return {
-            "status": "PICK",
-            "prediction": winner,
-            "confidence": round(confidence, 2),
-            "home_score": round(home, 2),
-            "away_score": round(away, 2)
-        }
+    st.info("Rodando backtest...")
 
+    results = run_backtest(start, end, model)
 
-# ==================================================
-# SCRAPER DE JOGOS AO VIVO
-# ==================================================
-def fetch_live_games():
-    url = "https://api.sofascore.com/api/v1/sport/football/events/live"
-    headers = {"User-Agent": "Mozilla/5.0"}
+    m = metrics(results)
 
-    data = requests.get(url, headers=headers).json()
+    st.write("### Métricas")
+    st.json(m)
 
-    games = []
+    st.write("### Resultados")
 
-    for e in data.get("events", []):
-
-        games.append({
-            "home": e["homeTeam"]["name"],
-            "away": e["awayTeam"]["name"],
-            "league": e["tournament"]["name"]
-        })
-
-    return games
-
-
-# ==================================================
-# STREAMLIT APP
-# ==================================================
-st.set_page_config(layout="wide")
-st.title("📊 Greg Stats X V4.5 - Sistema Completo")
-
-init_db()
-
-if st.button("🔄 Rodar análise agora"):
-
-    model = GregStatsV45()
-    games = fetch_live_games()
-
-    picks = []
-
-    for g in games:
-
-        home_matches = fetch_team_matches(g["home"])
-        away_matches = fetch_team_matches(g["away"])
-
-        if not home_matches or not away_matches:
-            continue
-
-        home_features = build_features(home_matches, True)
-        away_features = build_features(away_matches, False)
-
-        result = model.predict(home_features, away_features)
-
-        # salvar jogo
-        conn = get_conn()
-        c = conn.cursor()
-        c.execute(
-            "INSERT INTO games (home, away, league, date) VALUES (?, ?, ?, ?)",
-            (g["home"], g["away"], g["league"], datetime.now().strftime("%Y-%m-%d %H:%M"))
-        )
-        conn.commit()
-        conn.close()
-
-        if result["status"] == "PICK":
-            picks.append({
-                "jogo": f"{g['home']} vs {g['away']}",
-                "pick": result["prediction"],
-                "conf": result["confidence"],
-                "score_home": result["home_score"],
-                "score_away": result["away_score"]
-            })
-
-    st.success("Análise concluída!")
-
-    st.subheader("🎯 PICKS")
-
-    for p in picks:
-        st.write(p)
-
-
-# ==================================================
-# DASHBOARD
-# ==================================================
-st.subheader("📊 Últimos jogos")
-
-conn = get_conn()
-c = conn.cursor()
-
-rows = c.execute("SELECT * FROM games ORDER BY id DESC LIMIT 20").fetchall()
-
-for r in rows:
-    st.write(r)
-
-conn.close()
+    df = pd.DataFrame(results)
+    st.dataframe(df)
