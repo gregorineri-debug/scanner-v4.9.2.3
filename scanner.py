@@ -1,226 +1,193 @@
-import requests
-import pandas as pd
 import streamlit as st
-from datetime import datetime, date
-import pytz
-import statistics
+import requests
+import sqlite3
+from datetime import datetime
 
-st.set_page_config(page_title="Scanner V6 PRO", layout="wide")
-st.title("🌍 Scanner Automático V6 PRO (SofaScore)")
+# =========================
+# CONFIG BANCO
+# =========================
+DB_PATH = "betting.db"
 
-HEADERS = {"User-Agent": "Mozilla/5.0"}
+def get_conn():
+    return sqlite3.connect(DB_PATH)
 
-# =============================
-# SELETOR DE DATA
-# =============================
-data_input = st.date_input("📅 Selecione a data dos jogos:", value=date.today())
-data_alvo = data_input.strftime('%Y-%m-%d')
-st.write(f"🔎 Buscando jogos do dia: **{data_alvo}**")
+def init_db():
+    conn = get_conn()
+    c = conn.cursor()
 
-# =============================
-# FUNÇÃO: Buscar jogos do dia
-# =============================
-@st.cache_data(ttl=600)
-def get_matches(data_alvo):
-    try:
-        tz = pytz.timezone("America/Sao_Paulo")
-        start_day = tz.localize(datetime.strptime(data_alvo, "%Y-%m-%d"))
-        end_day = tz.localize(datetime.strptime(data_alvo + " 23:59:59", "%Y-%m-%d %H:%M:%S"))
-        start_ts = int(start_day.timestamp())
-        end_ts = int(end_day.timestamp())
+    c.execute("""
+    CREATE TABLE IF NOT EXISTS games (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        home TEXT,
+        away TEXT,
+        league TEXT,
+        date TEXT
+    )
+    """)
 
-        url = f"https://api.sofascore.com/api/v1/sport/football/scheduled-events/{data_alvo}"
-        data = requests.get(url, headers=HEADERS).json()
-        matches = []
+    conn.commit()
+    conn.close()
 
-        for event in data.get("events", []):
-            event_ts = event.get("startTimestamp", 0)
-            if start_ts <= event_ts <= end_ts:
-                matches.append({
-                    "home_id": event["homeTeam"]["id"],
-                    "away_id": event["awayTeam"]["id"],
-                    "home": event["homeTeam"]["name"],
-                    "away": event["awayTeam"]["name"],
-                    "tournament": event["tournament"]["name"],
-                    "country": event["tournament"]["category"]["name"]
-                })
-        return matches
-    except Exception as e:
-        st.error(f"Erro ao buscar jogos: {e}")
-        return []
 
-# =============================
-# FUNÇÃO: Buscar dados do time
-# =============================
-@st.cache_data(ttl=600)
-def get_team_data(team_id):
-    try:
-        url = f"https://api.sofascore.com/api/v1/team/{team_id}/events/last/20"
-        data = requests.get(url, headers=HEADERS).json()
-        events = data.get("events", [])
+# =========================
+# SCRAPER (SOFASCORE)
+# =========================
+def fetch_sofascore_games():
+    url = "https://api.sofascore.com/api/v1/sport/football/events/live"
+    headers = {"User-Agent": "Mozilla/5.0"}
 
-        # Inicializa métricas
-        total_weight = 0
-        weighted_wins = 0
-        goals_scored, goals_conceded = [], []
-        home_perf, away_perf = [], []
+    response = requests.get(url, headers=headers)
+    data = response.json()
 
-        for i, e in enumerate(events):
-            # Ignora eventos sem placar
-            if not e.get("homeScore") or e["homeScore"].get("current") is None:
-                continue
-            if not e.get("awayScore") or e["awayScore"].get("current") is None:
-                continue
+    games = []
 
-            weight = 1 - (i * 0.05)
-            total_weight += weight
+    for event in data.get("events", []):
+        games.append({
+            "home": event["homeTeam"]["name"],
+            "away": event["awayTeam"]["name"],
+            "league": event["tournament"]["name"],
+            "date": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        })
 
-            is_home = e["homeTeam"]["id"] == team_id
-            hs = e["homeScore"]["current"]
-            as_ = e["awayScore"]["current"]
+    return games
 
-            if is_home:
-                goals_scored.append(hs)
-                goals_conceded.append(as_)
-                home_perf.append(1 if hs > as_ else 0)
-                if hs > as_:
-                    weighted_wins += weight
-            else:
-                goals_scored.append(as_)
-                goals_conceded.append(hs)
-                away_perf.append(1 if as_ > hs else 0)
-                if as_ > hs:
-                    weighted_wins += weight
 
-        # Evita divisão por zero
-        total_weight = max(1, total_weight)
-        win_rate = weighted_wins / total_weight
-        avg_scored = sum(goals_scored) / max(1, len(goals_scored))
-        avg_conceded = sum(goals_conceded) / max(1, len(goals_conceded))
-        home_win_rate = sum(home_perf) / max(1, len(home_perf)) if home_perf else 0.5
-        away_win_rate = sum(away_perf) / max(1, len(away_perf)) if away_perf else 0.5
-        recent_games = home_perf + away_perf
-        recent_form = sum(recent_games[:5]) / max(1, len(recent_games[:5])) if recent_games else 0.5
+# =========================
+# FEATURES (SIMPLIFICADO)
+# =========================
+def mock_features():
+    """
+    Aqui ainda é simulado (depois conectamos ao histórico real)
+    """
 
-        # Corrige pvariance caso listas estejam vazias
-        variance_goals = 0
-        if goals_scored and goals_conceded:
-            variance_goals = statistics.pvariance(goals_scored) + statistics.pvariance(goals_conceded)
-        consistency = 1 / (1 + variance_goals) if variance_goals > 0 else 0.5
+    return {
+        "form": 2,
+        "home_away": 2,
+        "opponent_strength": 1,
+        "consistency": 1
+    }
 
-        return {
-            "win_rate": win_rate,
-            "avg_scored": avg_scored,
-            "avg_conceded": avg_conceded,
-            "home_win_rate": home_win_rate,
-            "away_win_rate": away_win_rate,
-            "recent_form": recent_form,
-            "consistency": consistency
-        }
-    except Exception as e:
-        st.warning(f"Erro ao buscar dados do time {team_id}: {e}")
-        # Valores neutros se erro
-        return {
-            "win_rate": 0.5,
-            "avg_scored": 1,
-            "avg_conceded": 1,
-            "home_win_rate": 0.5,
-            "away_win_rate": 0.5,
-            "recent_form": 0.5,
-            "consistency": 0.5
+
+# =========================
+# MODELO GREG STATS V4.5
+# =========================
+class GregStatsV45:
+
+    def __init__(self):
+        self.weights = {
+            "form": 3.0,
+            "home_away": 2.5,
+            "opponent_strength": 2.0,
+            "consistency": 1.5
         }
 
-# =============================
-# SCORE
-# =============================
-def calculate_score(home, away):
-    forma = home["win_rate"] - away["win_rate"]
-    ataque = home["avg_scored"] - away["avg_scored"]
-    defesa = away["avg_conceded"] - home["avg_conceded"]
-    casa_fora = home["home_win_rate"] - away["away_win_rate"]
-    momento = home["recent_form"] - away["recent_form"]
-    consistencia = home["consistency"] - away["consistency"]
+    def calculate_score(self, f):
+        return (
+            (f["form"] * self.weights["form"]) +
+            (f["home_away"] * self.weights["home_away"]) +
+            (f["opponent_strength"] * self.weights["opponent_strength"]) +
+            (f["consistency"] * self.weights["consistency"])
+        )
 
-    score = (
-        forma * 25 +
-        ataque * 15 +
-        defesa * 15 +
-        casa_fora * 20 +
-        momento * 15 +
-        consistencia * 10
-    )
-    score = max(0, min(100, 50 + score))
-    return score
+    def predict(self, home_features, away_features):
 
-def score_to_probability(score):
-    return round(score / 100, 2)
+        home_score = self.calculate_score(home_features)
+        away_score = self.calculate_score(away_features)
 
-# =============================
-# FILTRO DE APOSTA
-# =============================
-def is_valid_bet(score, home, away):
-    if 45 <= score <= 55:
-        return False
-    if home["consistency"] < 0.3 or away["consistency"] < 0.3:
-        return False
-    return True
+        diff = abs(home_score - away_score)
 
-# =============================
-# DECISÃO
-# =============================
-def get_prediction(score):
-    if score >= 60:
-        return "Casa vence"
-    elif score <= 40:
-        return "Visitante vence"
-    else:
-        return "Sem aposta"
+        if diff < 2:
+            return {"status": "IGNORE"}
 
-def get_strength(score):
-    if score >= 75 or score <= 25:
-        return "🔥 Forte"
-    elif score >= 65 or score <= 35:
-        return "✅ Boa"
-    else:
-        return "⚠️ Arriscada"
+        if home_score > away_score:
+            winner = "HOME"
+            score_winner = home_score
+        else:
+            winner = "AWAY"
+            score_winner = away_score
 
-# =============================
-# PROCESSAMENTO PRINCIPAL
-# =============================
-matches = get_matches(data_alvo)
-results = []
+        confidence = score_winner / (home_score + away_score)
 
-for m in matches:
-    home = get_team_data(m["home_id"])
-    away = get_team_data(m["away_id"])
-    score = calculate_score(home, away)
-    if not is_valid_bet(score, home, away):
-        continue
-    prob = score_to_probability(score)
-    prediction = get_prediction(score)
-    strength = get_strength(score)
+        if score_winner < 5:
+            return {"status": "IGNORE"}
 
-    results.append({
-        "Jogo": f"{m['home']} x {m['away']}",
-        "Liga": m["tournament"],
-        "Score": round(score, 1),
-        "Probabilidade": prob,
-        "Aposta": prediction,
-        "Força": strength
-    })
+        return {
+            "status": "PICK",
+            "prediction": winner,
+            "confidence": round(confidence, 2),
+            "home_score": round(home_score, 2),
+            "away_score": round(away_score, 2)
+        }
 
-# =============================
-# OUTPUT
-# =============================
-if results:
-    df = pd.DataFrame(results)
-    st.subheader("📊 Todos os Jogos (Filtrados)")
-    st.dataframe(df, use_container_width=True)
 
-    st.subheader("💰 Apostas Recomendadas")
-    st.dataframe(
-        df[(df["Aposta"] != "Sem aposta") & (df["Força"] != "⚠️ Arriscada")],
-        use_container_width=True
-    )
-else:
-    st.warning("Nenhum jogo válido encontrado (filtro V6).")
+# =========================
+# SALVAR NO BANCO
+# =========================
+def save_game(home, away, league, date):
+    conn = get_conn()
+    c = conn.cursor()
+
+    c.execute("""
+        INSERT INTO games (home, away, league, date)
+        VALUES (?, ?, ?, ?)
+    """, (home, away, league, date))
+
+    conn.commit()
+    conn.close()
+
+
+# =========================
+# UI STREAMLIT
+# =========================
+st.set_page_config(layout="wide")
+
+st.title("📊 Greg Stats X V4.5 - Betting System")
+
+init_db()
+
+if st.button("🔄 Atualizar jogos (SofaScore)"):
+
+    games = fetch_sofascore_games()
+
+    model = GregStatsV45()
+
+    picks = []
+
+    for g in games:
+
+        # FEATURES (mock por enquanto)
+        home_features = mock_features()
+        away_features = mock_features()
+
+        result = model.predict(home_features, away_features)
+
+        save_game(g["home"], g["away"], g["league"], g["date"])
+
+        if result["status"] == "PICK":
+            picks.append({
+                "game": f"{g['home']} vs {g['away']}",
+                "prediction": result["prediction"],
+                "confidence": result["confidence"]
+            })
+
+    st.success("Atualizado com sucesso!")
+
+    st.subheader("🎯 Picks")
+
+    for p in picks:
+        st.write(p)
+
+# =========================
+# DASHBOARD SIMPLES
+# =========================
+st.subheader("📊 Jogos carregados")
+
+conn = get_conn()
+c = conn.cursor()
+
+data = c.execute("SELECT * FROM games ORDER BY id DESC LIMIT 20").fetchall()
+
+for row in data:
+    st.write(row)
+
+conn.close()
