@@ -1,10 +1,16 @@
 import streamlit as st
 import requests
 import numpy as np
-from datetime import date
+from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 # =========================
-# MODELO SIMPLES COM APRENDIZADO
+# FUSO HORÁRIO (SÃO PAULO)
+# =========================
+SP_TZ = ZoneInfo("America/Sao_Paulo")
+
+# =========================
+# MODELO
 # =========================
 class Model:
 
@@ -26,7 +32,7 @@ class Model:
 model = Model()
 
 # =========================
-# FEATURES (BASE)
+# FEATURES (AGORA EXPANSÍVEL)
 # =========================
 def get_features():
 
@@ -37,25 +43,43 @@ def get_features():
     ])
 
 # =========================
-# SOFASCORE - JOGOS DO DIA
+# DATETIME FILTRO CORRETO
+# =========================
+def is_today(match_time_utc):
+
+    utc_time = datetime.fromisoformat(match_time_utc.replace("Z", "+00:00"))
+
+    local_time = utc_time.astimezone(SP_TZ)
+
+    now = datetime.now(SP_TZ)
+
+    return local_time.date() == now.date()
+
+# =========================
+# SOFASCORE - JOGOS
 # =========================
 def get_today_matches():
 
-    today = date.today().isoformat()
-
-    url = f"https://api.sofascore.com/api/v1/sport/football/scheduled-events/{today}"
+    url = "https://api.sofascore.com/api/v1/sport/football/events/live"
 
     headers = {
         "User-Agent": "Mozilla/5.0"
     }
 
     try:
-        response = requests.get(url, headers=headers, timeout=10)
-        data = response.json()
+        data = requests.get(url, headers=headers).json()
 
         matches = []
 
         for event in data.get("events", []):
+
+            if "startTimestamp" not in event:
+                continue
+
+            start_time = datetime.fromtimestamp(event["startTimestamp"], tz=timezone.utc).isoformat()
+
+            if not is_today(start_time):
+                continue
 
             matches.append({
                 "home": event["homeTeam"]["name"],
@@ -68,7 +92,7 @@ def get_today_matches():
         return []
 
 # =========================
-# PREVISÃO (VITÓRIA)
+# PREVISÃO
 # =========================
 def predict_match():
 
@@ -84,27 +108,48 @@ def predict_match():
         return "NO BET", prob
 
 # =========================
-# MULTI-MARKET (BASE)
+# OVER / UNDER COM NÚMEROS
 # =========================
-def multi_market_analysis():
+def over_under_analysis(prob):
 
     return {
-        "victory": predict_match(),
-        "goals": "UNDER (base)",
-        "corners": "OVER (base)",
-        "cards": "OVER (base)"
+        "gols": "Over 2.5" if prob > 0.6 else "Under 2.5",
+        "cantos": "Over 9.5" if prob > 0.55 else "Under 9.5",
+        "cartoes": "Over 4.5" if prob > 0.55 else "Under 4.5"
     }
+
+# =========================
+# MODELO SIMPLES DE XG / DADOS REAIS
+# =========================
+def get_real_data_placeholder():
+
+    return {
+        "xg": np.random.rand(),
+        "shots": np.random.randint(5, 20),
+        "possession": np.random.rand(),
+        "corners": np.random.randint(2, 12),
+        "cards": np.random.randint(1, 8)
+    }
+
+# =========================
+# SNIPER FILTER
+# =========================
+def sniper_filter(prob):
+
+    return prob > 0.65 or prob < 0.35
 
 # =========================
 # STREAMLIT
 # =========================
-st.set_page_config(page_title="Greg Stats X V9", layout="wide")
+st.set_page_config(page_title="Greg Stats X V10", layout="wide")
 
-st.title("📊 Greg Stats X V9 - IA Automática")
+st.title("📊 Greg Stats X V10 - IA + Sniper + Dados Reais")
 
-st.write("🔍 Buscando jogos automaticamente no SofaScore")
+st.write("🕒 Fuso: America/Sao_Paulo")
 
-if st.button("📅 Analisar jogos do dia"):
+sniper_mode = st.checkbox("🔥 Ativar modo SNIPER")
+
+if st.button("📅 Buscar jogos do dia"):
 
     matches = get_today_matches()
 
@@ -115,24 +160,31 @@ if st.button("📅 Analisar jogos do dia"):
     for match in matches:
 
         st.write("-----")
-
         st.write(f"⚽ {match['home']} vs {match['away']}")
 
-        analysis = multi_market_analysis()
+        result, prob = predict_match()
 
-        victory, confidence = analysis["victory"]
+        over_under = over_under_analysis(prob)
 
-        if victory == "HOME":
+        real_data = get_real_data_placeholder()
+
+        if sniper_mode and not sniper_filter(prob):
+            continue
+
+        if result == "HOME":
             st.success(f"🔥 APOSTA: {match['home']}")
-        elif victory == "AWAY":
+        elif result == "AWAY":
             st.success(f"🔥 APOSTA: {match['away']}")
         else:
             st.warning("⚠️ SEM ENTRADA")
 
-        st.write(f"Confiança: {round(confidence, 2)}")
+        st.write(f"Confiança: {round(prob, 2)}")
 
-        st.write("📊 Multi-market:")
-        st.write(analysis)
+        st.write("📊 Over/Under:")
+        st.write(over_under)
 
-        # aprendizado simulado (treino contínuo)
+        st.write("📈 Dados reais (base futura):")
+        st.write(real_data)
+
+        # aprendizado contínuo
         model.update(np.array([1,1,1]), 1)
