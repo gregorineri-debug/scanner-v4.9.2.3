@@ -2,74 +2,19 @@ import streamlit as st
 import requests
 import numpy as np
 import pandas as pd
-from datetime import datetime, timezone
+from datetime import datetime
 from zoneinfo import ZoneInfo
 
-# =========================
-# TIMEZONE
-# =========================
 SP_TZ = ZoneInfo("America/Sao_Paulo")
 
 # =========================
-# MODELO AVANÇADO
-# =========================
-class AdvancedModel:
-
-    def __init__(self):
-        self.weights = np.array([2.5, 2.0, 1.5, 1.5, 1.0])
-
-    def predict(self, X):
-        score = np.dot(X, self.weights)
-        prob = 1 / (1 + np.exp(-score))
-        return prob
-
-model = AdvancedModel()
-
-# =========================
-# FEATURES REAIS (BASE)
-# =========================
-def get_real_stats(team):
-
-    # ⚠️ Placeholder estruturado (pronto pra API real)
-    return {
-        "xg": np.random.uniform(0.8, 2.2),
-        "shots": np.random.randint(8, 18),
-        "possession": np.random.uniform(40, 65),
-        "corners": np.random.randint(3, 10),
-        "cards": np.random.randint(1, 5)
-    }
-
-def build_features(home, away):
-
-    h = get_real_stats(home)
-    a = get_real_stats(away)
-
-    return np.array([
-        h["xg"] - a["xg"],
-        h["shots"] - a["shots"],
-        h["possession"] - a["possession"],
-        h["corners"] - a["corners"],
-        h["cards"] - a["cards"]
-    ])
-
-# =========================
-# DATA FILTER (DATA CORRETA)
-# =========================
-def is_today(timestamp):
-
-    utc_time = datetime.fromtimestamp(timestamp, tz=timezone.utc)
-    local_time = utc_time.astimezone(SP_TZ)
-
-    now = datetime.now(SP_TZ)
-
-    return local_time.date() == now.date()
-
-# =========================
-# JOGOS DO DIA
+# BUSCA JOGOS DO DIA (CORRIGIDO)
 # =========================
 def get_today_matches():
 
-    url = "https://api.sofascore.com/api/v1/sport/football/scheduled-events/today"
+    today = datetime.now(SP_TZ).strftime("%Y-%m-%d")
+
+    url = f"https://api.sofascore.com/api/v1/sport/football/scheduled-events/{today}"
 
     headers = {"User-Agent": "Mozilla/5.0"}
 
@@ -78,14 +23,13 @@ def get_today_matches():
 
         matches = []
 
-        for event in data.get("events", []):
-
-            if not is_today(event["startTimestamp"]):
-                continue
+        for e in data.get("events", []):
 
             matches.append({
-                "home": event["homeTeam"]["name"],
-                "away": event["awayTeam"]["name"]
+                "home": e["homeTeam"]["name"],
+                "away": e["awayTeam"]["name"],
+                "home_id": e["homeTeam"]["id"],
+                "away_id": e["awayTeam"]["id"]
             })
 
         return matches
@@ -94,67 +38,135 @@ def get_today_matches():
         return []
 
 # =========================
-# SNIPER
+# HISTÓRICO REAL DO TIME
 # =========================
-def sniper(prob):
-    return prob > 0.7 or prob < 0.3
+def get_team_last_matches(team_id, n=10):
+
+    url = f"https://api.sofascore.com/api/v1/team/{team_id}/events/last/{n}"
+
+    try:
+        data = requests.get(url).json()
+
+        matches = []
+
+        for e in data.get("events", []):
+
+            home = e["homeScore"]["current"]
+            away = e["awayScore"]["current"]
+
+            if home is None or away is None:
+                continue
+
+            matches.append((home, away))
+
+        return matches
+
+    except:
+        return []
 
 # =========================
-# ANALISE COMPLETA
+# FEATURES REAIS
 # =========================
-def analyze_match(home, away):
+def build_features(team_id):
 
-    features = build_features(home, away)
+    matches = get_team_last_matches(team_id)
 
-    prob = model.predict(features)
+    if not matches:
+        return [0,0,0]
 
-    if prob > 0.55:
-        pick = home
-    elif prob < 0.45:
-        pick = away
+    goals_for = np.mean([m[0] for m in matches])
+    goals_against = np.mean([m[1] for m in matches])
+
+    form = sum([1 if m[0]>m[1] else 0 for m in matches]) / len(matches)
+
+    return [goals_for, goals_against, form]
+
+# =========================
+# MODELO CALIBRADO
+# =========================
+def predict(home_feat, away_feat):
+
+    attack_diff = home_feat[0] - away_feat[1]
+    defense_diff = away_feat[0] - home_feat[1]
+    form_diff = home_feat[2] - away_feat[2]
+
+    score = (attack_diff * 2.5) + (form_diff * 2.0) - (defense_diff * 1.5)
+
+    prob = 1 / (1 + np.exp(-score))
+
+    if prob > 0.60:
+        pick = "HOME"
+    elif prob < 0.40:
+        pick = "AWAY"
     else:
         pick = "NO BET"
 
-    gols = "Over 2.5" if prob > 0.6 else "Under 2.5"
-    cantos = "Over 9.5" if prob > 0.55 else "Under 9.5"
-    cards = "Over 4.5" if prob > 0.55 else "Under 4.5"
+    return pick, prob
+
+# =========================
+# MERCADOS
+# =========================
+def markets(prob):
 
     return {
-        "Jogo": f"{home} vs {away}",
-        "Pick": pick,
-        "Confiança": round(prob, 2),
-        "Gols": gols,
-        "Cantos": cantos,
-        "Cartões": cards,
-        "Sniper": "🔥" if sniper(prob) else ""
+        "Gols": "Over 2.5" if prob > 0.55 else "Under 2.5",
+        "Cantos": "Over 9.5" if prob > 0.52 else "Under 9.5",
+        "Cartões": "Over 4.5" if prob > 0.52 else "Under 4.5"
     }
 
 # =========================
-# STREAMLIT UI
+# SNIPER
+# =========================
+def sniper(prob):
+    return prob > 0.70 or prob < 0.30
+
+# =========================
+# STREAMLIT
 # =========================
 st.set_page_config(layout="wide")
 
-st.title("📊 Greg Stats X V11 - Scanner Profissional")
+st.title("📊 Greg Stats X V12 - Scanner REAL")
 
-sniper_mode = st.checkbox("🔥 Apenas SNIPER")
+sniper_mode = st.checkbox("🔥 Modo SNIPER")
 
 if st.button("📅 Buscar jogos do dia"):
 
     matches = get_today_matches()
 
-    data = []
+    if not matches:
+        st.error("Erro ao buscar jogos")
+        st.stop()
+
+    rows = []
 
     for m in matches:
 
-        result = analyze_match(m["home"], m["away"])
+        home_feat = build_features(m["home_id"])
+        away_feat = build_features(m["away_id"])
 
-        if sniper_mode and result["Sniper"] == "":
+        if home_feat == [0,0,0] or away_feat == [0,0,0]:
             continue
 
-        data.append(result)
+        pick, prob = predict(home_feat, away_feat)
 
-    if data:
-        df = pd.DataFrame(data)
+        if sniper_mode and not sniper(prob):
+            continue
+
+        mk = markets(prob)
+
+        rows.append({
+            "Jogo": f"{m['home']} vs {m['away']}",
+            "Pick": pick,
+            "Confiança": round(prob,2),
+            "Gols": mk["Gols"],
+            "Cantos": mk["Cantos"],
+            "Cartões": mk["Cartões"],
+            "Sniper": "🔥" if sniper(prob) else ""
+        })
+
+    df = pd.DataFrame(rows)
+
+    if not df.empty:
         st.dataframe(df, use_container_width=True)
     else:
         st.warning("Nenhuma entrada encontrada")
