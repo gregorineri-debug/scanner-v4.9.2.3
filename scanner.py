@@ -1,6 +1,7 @@
 import streamlit as st
-import requests
-from datetime import datetime, timedelta
+import http.client
+import json
+from datetime import datetime
 import pytz
 from statistics import mean
 
@@ -8,7 +9,26 @@ from statistics import mean
 # CONFIG
 # ==============================
 
+API_KEY = "XxXxXxXxXxXxXxXxXxXxXxXx"
+
 TZ = pytz.timezone("America/Sao_Paulo")
+
+# ==============================
+# CONEXÃO API (HTTP.CLIENT)
+# ==============================
+
+def conectar_api(endpoint):
+    conn = http.client.HTTPSConnection("v3.football.api-sports.io")
+
+    headers = {
+        'x-apisports-key': API_KEY
+    }
+
+    conn.request("GET", endpoint, headers=headers)
+    res = conn.getresponse()
+    data = res.read()
+
+    return json.loads(data.decode("utf-8"))
 
 # ==============================
 # NORMALIZAÇÃO
@@ -27,134 +47,116 @@ def gerar_id_jogo(jogo):
     )
 
 # ==============================
-# TIME RANGE (CORRIGIDO)
+# TIMEZONE
 # ==============================
 
-def obter_intervalo_hoje():
-    agora = datetime.now(TZ)
-    inicio = agora.replace(hour=0, minute=0, second=0, microsecond=0)
-    fim = agora.replace(hour=23, minute=59, second=59, microsecond=999999)
-    return inicio, fim
+def ajustar_timezone(data_str):
+    data = datetime.fromisoformat(data_str.replace("Z", "+00:00"))
+    return data.astimezone(TZ)
 
 # ==============================
-# FETCH DADOS (MOCK / ESTRUTURA)
+# BUSCAR JOGOS REAIS
 # ==============================
 
-def buscar_sofascore():
-    return []
+def buscar_jogos():
+    hoje = datetime.now(TZ).strftime("%Y-%m-%d")
 
-def buscar_footystats():
-    return []
+    endpoint = f"/fixtures?date={hoje}"
 
-def buscar_fbref():
-    return []
+    data = conectar_api(endpoint)
 
-# ==============================
-# FILTRO DATA
-# ==============================
+    jogos = []
 
-def filtrar_por_data(jogos):
-    inicio, fim = obter_intervalo_hoje()
-    filtrados = []
+    for item in data.get("response", []):
+        try:
+            jogo = {
+                "home": item["teams"]["home"]["name"],
+                "away": item["teams"]["away"]["name"],
+                "data": ajustar_timezone(item["fixture"]["date"]),
+                "liga": item["league"]["name"],
 
-    for j in jogos:
-        if inicio <= j["data"] <= fim:
-            filtrados.append(j)
+                # Estrutura inicial (vamos evoluir depois)
+                "forma_home": [],
+                "forma_away": [],
+                "forca_home": 0,
+                "forca_away": 0,
+                "casa": 0.1
+            }
 
-    return filtrados
+            jogos.append(jogo)
 
-# ==============================
-# DEDUPLICAÇÃO
-# ==============================
+        except:
+            continue
 
-def consolidar_jogos():
-    fontes = [buscar_sofascore, buscar_footystats, buscar_fbref]
-    jogos_unicos = {}
-
-    for fonte in fontes:
-        jogos = fonte()
-        jogos = filtrar_por_data(jogos)
-
-        for jogo in jogos:
-            jogo_id = gerar_id_jogo(jogo)
-
-            if jogo_id not in jogos_unicos:
-                jogos_unicos[jogo_id] = jogo
-            else:
-                # MERGE SIMPLES (prioridade: dados existentes + novos)
-                jogos_unicos[jogo_id].update({
-                    k: v for k, v in jogo.items() if v is not None
-                })
-
-    return jogos_unicos
+    return jogos
 
 # ==============================
-# SEGURANÇA ESTATÍSTICA
+# SEGURANÇA
 # ==============================
 
 def safe_mean(lista):
-    if not lista or len(lista) == 0:
+    if not lista:
         return 0
     return mean(lista)
 
 # ==============================
-# MODELO V4.5 (SOMENTE VENCEDOR)
+# MODELO V4.5
 # ==============================
 
 def analisar_jogo(jogo):
-    try:
-        forma_home = safe_mean(jogo.get("forma_home", []))
-        forma_away = safe_mean(jogo.get("forma_away", []))
+    forma_home = safe_mean(jogo.get("forma_home", []))
+    forma_away = safe_mean(jogo.get("forma_away", []))
 
-        forca_home = jogo.get("forca_home", 0)
-        forca_away = jogo.get("forca_away", 0)
+    forca_home = jogo.get("forca_home", 0)
+    forca_away = jogo.get("forca_away", 0)
 
-        casa = jogo.get("casa", 0.1)  # leve vantagem casa
+    casa = jogo.get("casa", 0.1)
 
-        score_home = forma_home + forca_home + casa
-        score_away = forma_away + forca_away
+    score_home = forma_home + forca_home + casa
+    score_away = forma_away + forca_away
 
-        if score_home > score_away:
-            pick = "HOME"
-            score = score_home - score_away
-        else:
-            pick = "AWAY"
-            score = score_away - score_home
+    if score_home > score_away:
+        pick = "HOME"
+        score = score_home - score_away
+    else:
+        pick = "AWAY"
+        score = score_away - score_home
 
-        return {
-            "id": gerar_id_jogo(jogo),
-            "home": jogo["home"],
-            "away": jogo["away"],
-            "liga": jogo.get("liga", ""),
-            "data": jogo["data"],
-            "pick": pick,
-            "score": round(score, 2)
-        }
-
-    except Exception as e:
-        return None
+    return {
+        "id": gerar_id_jogo(jogo),
+        "home": jogo["home"],
+        "away": jogo["away"],
+        "liga": jogo["liga"],
+        "data": jogo["data"],
+        "pick": pick,
+        "score": round(score, 2)
+    }
 
 # ==============================
-# BLOQUEIO DE DUPLICIDADE FINAL
+# PIPELINE
 # ==============================
 
 def gerar_picks():
-    jogos = consolidar_jogos()
+    jogos = buscar_jogos()
+
+    jogos_unicos = {}
     picks = {}
 
-    for jogo_id, jogo in jogos.items():
-        resultado = analisar_jogo(jogo)
+    # DEDUPLICAÇÃO
+    for jogo in jogos:
+        jogo_id = gerar_id_jogo(jogo)
 
-        if not resultado:
-            continue
+        if jogo_id not in jogos_unicos:
+            jogos_unicos[jogo_id] = jogo
+
+    # ANÁLISE
+    for jogo_id, jogo in jogos_unicos.items():
+        resultado = analisar_jogo(jogo)
 
         if jogo_id not in picks:
             picks[jogo_id] = resultado
         else:
-            existente = picks[jogo_id]
-
-            # mantém maior confiança
-            if resultado["score"] > existente["score"]:
+            if resultado["score"] > picks[jogo_id]["score"]:
                 picks[jogo_id] = resultado
 
     return list(picks.values())
@@ -165,21 +167,21 @@ def gerar_picks():
 
 st.set_page_config(page_title="Greg Stats X V4.5", layout="wide")
 
-st.title("⚽ Greg Stats X V4.5 - Scanner de Valor")
+st.title("⚽ Greg Stats X V4.5 - Scanner Profissional")
 
-if st.button("🔍 Buscar Jogos do Dia"):
+if st.button("🔍 Buscar Jogos de Hoje"):
     picks = gerar_picks()
 
     if not picks:
-        st.warning("Nenhum jogo encontrado.")
+        st.warning("Nenhum jogo encontrado (verifique API ou data)")
     else:
-        st.success(f"{len(picks)} jogos analisados")
+        st.success(f"{len(picks)} jogos encontrados")
 
         for p in picks:
             st.markdown(f"""
             ### {p['home']} vs {p['away']}
             - 🏆 Liga: {p['liga']}
-            - 🕒 Data: {p['data'].strftime('%d/%m %H:%M')}
+            - 🕒 {p['data'].strftime('%d/%m %H:%M')}
             - 🎯 Pick: **{p['pick']}**
             - 📊 Confiança: **{p['score']}**
             """)
