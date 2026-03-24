@@ -1,8 +1,9 @@
 import streamlit as st
 import requests
-from datetime import datetime, timedelta
+from datetime import datetime
 import pytz
 from statistics import mean
+import pandas as pd
 
 # ==============================
 # CONFIG
@@ -10,27 +11,31 @@ from statistics import mean
 
 TZ = pytz.timezone("America/Sao_Paulo")
 
+# 🔗 MAPA FBREF (VOCÊ VAI EXPANDIR)
+TEAM_URLS = {
+    # exemplos (adicione conforme for usando)
+    # "Palmeiras": "https://fbref.com/en/squads/XXXX/",
+}
+
 # ==============================
-# INTERVALO DO DIA (BRASIL)
+# INTERVALO DO DIA
 # ==============================
 
 def intervalo_hoje():
     agora = datetime.now(TZ)
-
     inicio = agora.replace(hour=0, minute=0, second=0, microsecond=0)
     fim = agora.replace(hour=23, minute=59, second=59, microsecond=999999)
-
     return inicio, fim
 
 # ==============================
-# CONVERTER TIMESTAMP
+# DATA
 # ==============================
 
 def ajustar_data(timestamp):
     return datetime.fromtimestamp(timestamp, TZ)
 
 # ==============================
-# BUSCAR JOGOS (SCRAPING REAL)
+# BUSCAR JOGOS
 # ==============================
 
 def buscar_jogos():
@@ -38,9 +43,7 @@ def buscar_jogos():
 
     url = f"https://api.sofascore.com/api/v1/sport/football/scheduled-events/{hoje}"
 
-    headers = {
-        "User-Agent": "Mozilla/5.0"
-    }
+    headers = {"User-Agent": "Mozilla/5.0"}
 
     inicio, fim = intervalo_hoje()
 
@@ -54,11 +57,10 @@ def buscar_jogos():
             try:
                 data_jogo = ajustar_data(e["startTimestamp"])
 
-                # 🔥 FILTRO CORRETO DO DIA (BRASIL)
                 if not (inicio <= data_jogo <= fim):
                     continue
 
-                jogo = {
+                jogos.append({
                     "id": e["id"],
                     "home": e["homeTeam"]["name"],
                     "away": e["awayTeam"]["name"],
@@ -66,9 +68,7 @@ def buscar_jogos():
                     "data": data_jogo,
                     "home_id": e["homeTeam"]["id"],
                     "away_id": e["awayTeam"]["id"]
-                }
-
-                jogos.append(jogo)
+                })
 
             except:
                 continue
@@ -79,15 +79,12 @@ def buscar_jogos():
         return []
 
 # ==============================
-# FORMA REAL (ÚLTIMOS 5 JOGOS)
+# FORMA
 # ==============================
 
 def buscar_forma(team_id):
     url = f"https://api.sofascore.com/api/v1/team/{team_id}/events/last/5"
-
-    headers = {
-        "User-Agent": "Mozilla/5.0"
-    }
+    headers = {"User-Agent": "Mozilla/5.0"}
 
     try:
         r = requests.get(url, headers=headers, timeout=10)
@@ -107,19 +104,9 @@ def buscar_forma(team_id):
                     continue
 
                 if team_id == home_id:
-                    if gols_home > gols_away:
-                        resultados.append(1)
-                    elif gols_home == gols_away:
-                        resultados.append(0.5)
-                    else:
-                        resultados.append(0)
+                    resultados.append(1 if gols_home > gols_away else 0.5 if gols_home == gols_away else 0)
                 else:
-                    if gols_away > gols_home:
-                        resultados.append(1)
-                    elif gols_home == gols_away:
-                        resultados.append(0.5)
-                    else:
-                        resultados.append(0)
+                    resultados.append(1 if gols_away > gols_home else 0.5 if gols_home == gols_away else 0)
 
             except:
                 continue
@@ -130,6 +117,43 @@ def buscar_forma(team_id):
         return []
 
 # ==============================
+# xG (FBREF)
+# ==============================
+
+def get_xg(team_name):
+    url = TEAM_URLS.get(team_name)
+
+    if not url:
+        return 0  # sem dado → neutro
+
+    try:
+        res = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
+        tables = pd.read_html(res.text)
+
+        for df in tables:
+            if "xG" in df.columns and "xGA" in df.columns:
+
+                df = df.dropna(subset=["xG", "xGA"])
+                df["xG"] = pd.to_numeric(df["xG"], errors="coerce")
+                df["xGA"] = pd.to_numeric(df["xGA"], errors="coerce")
+                df = df.dropna()
+
+                if len(df) < 5:
+                    return 0
+
+                base = df["xG"].mean() - df["xGA"].mean()
+
+                recent = df.tail(5)
+                form = (recent["xG"].mean() - recent["xGA"].mean()) * 1.5
+
+                return base + form
+
+        return 0
+
+    except:
+        return 0
+
+# ==============================
 # UTIL
 # ==============================
 
@@ -137,7 +161,7 @@ def safe_mean(lista):
     return mean(lista) if lista else 0
 
 # ==============================
-# MODELO V4.5 (SOMENTE VENCEDOR)
+# MODELO V4.5 + xG
 # ==============================
 
 def analisar_jogo(jogo):
@@ -145,10 +169,16 @@ def analisar_jogo(jogo):
         forma_home = safe_mean(buscar_forma(jogo["home_id"]))
         forma_away = safe_mean(buscar_forma(jogo["away_id"]))
 
-        casa = 0.15
+        # xG
+        xg_home = get_xg(jogo["home"])
+        xg_away = get_xg(jogo["away"])
 
-        score_home = forma_home + casa
-        score_away = forma_away
+        # pesos
+        casa = 0.15
+        peso_xg = 0.35
+
+        score_home = forma_home + casa + (xg_home * peso_xg)
+        score_away = forma_away + (xg_away * peso_xg)
 
         if score_home > score_away:
             pick = "HOME"
@@ -163,7 +193,8 @@ def analisar_jogo(jogo):
             "liga": jogo["liga"],
             "data": jogo["data"],
             "pick": pick,
-            "score": round(score, 2)
+            "score": round(score, 2),
+            "xg_diff": round(xg_home - xg_away, 2)
         }
 
     except:
@@ -175,7 +206,6 @@ def analisar_jogo(jogo):
 
 def gerar_picks():
     jogos = buscar_jogos()
-
     picks = []
 
     for j in jogos:
@@ -183,16 +213,15 @@ def gerar_picks():
         if r:
             picks.append(r)
 
-    # ordenar por confiança
     return sorted(picks, key=lambda x: x["score"], reverse=True)
 
 # ==============================
-# UI STREAMLIT
+# UI
 # ==============================
 
-st.set_page_config(page_title="Greg Stats X V4.5 SCRAPER", layout="wide")
+st.set_page_config(page_title="Greg Stats X V4.5 + xG", layout="wide")
 
-st.title("⚽ Greg Stats X V4.5 - Scraping PRO (SofaScore)")
+st.title("⚽ Greg Stats X V4.5 + xG (PRO)")
 
 if st.button("🚀 Buscar Jogos de Hoje"):
     picks = gerar_picks()
@@ -209,4 +238,5 @@ if st.button("🚀 Buscar Jogos de Hoje"):
             - 🕒 {p['data'].strftime('%d/%m %H:%M')}
             - 🎯 Pick: **{p['pick']}**
             - 📊 Confiança: **{p['score']}**
+            - 📈 xG diff: **{p['xg_diff']}**
             """)
