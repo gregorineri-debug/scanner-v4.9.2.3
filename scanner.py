@@ -16,29 +16,51 @@ SP_TZ = ZoneInfo("America/Sao_Paulo")
 # =========================
 def get_today_matches():
 
-    now_sp = datetime.now(SP_TZ)
-    today_str = now_sp.strftime("%Y-%m-%d")
-
-    url = f"https://api.sofascore.com/api/v1/sport/football/scheduled-events/{today_str}"
     headers = {"User-Agent": "Mozilla/5.0"}
 
+    matches = []
+
+    # 🔥 busca 2 dias para garantir cobertura
+    dates_to_check = []
+
+    now_sp = datetime.now(SP_TZ)
+
+    for i in [-1, 0, 1]:
+        d = (now_sp + timedelta(days=i)).strftime("%Y-%m-%d")
+        dates_to_check.append(d)
+
+    # 🔥 janela exata do dia em SP
+    start_day = now_sp.replace(hour=0, minute=0, second=0, microsecond=0)
+    end_day = start_day + timedelta(days=1)
+
     try:
-        data = requests.get(url, headers=headers).json()
+        for date_str in dates_to_check:
 
-        matches = []
+            url = f"https://api.sofascore.com/api/v1/sport/football/scheduled-events/{date_str}"
+            data = requests.get(url, headers=headers).json()
 
-        for e in data.get("events", []):
+            for e in data.get("events", []):
 
-            utc_time = datetime.fromtimestamp(e["startTimestamp"], tz=timezone.utc)
-            local_time = utc_time.astimezone(SP_TZ)
+                if "startTimestamp" not in e:
+                    continue
 
-            matches.append({
-                "home": e["homeTeam"]["name"],
-                "away": e["awayTeam"]["name"],
-                "home_id": e["homeTeam"]["id"],
-                "away_id": e["awayTeam"]["id"],
-                "time": local_time.strftime("%H:%M")
-            })
+                # UTC → datetime
+                utc_time = datetime.fromtimestamp(e["startTimestamp"], tz=timezone.utc)
+
+                # SP timezone
+                local_time = utc_time.astimezone(SP_TZ)
+
+                # 🔥 FILTRO DEFINITIVO
+                if not (start_day <= local_time < end_day):
+                    continue
+
+                matches.append({
+                    "home": e["homeTeam"]["name"],
+                    "away": e["awayTeam"]["name"],
+                    "home_id": e["homeTeam"]["id"],
+                    "away_id": e["awayTeam"]["id"],
+                    "time": local_time.strftime("%H:%M")
+                })
 
         return matches
 
