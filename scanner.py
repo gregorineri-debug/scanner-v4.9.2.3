@@ -3,7 +3,6 @@ import requests
 from datetime import datetime
 from zoneinfo import ZoneInfo
 import pandas as pd
-from bs4 import BeautifulSoup
 
 # -------------------------
 # CONFIG
@@ -46,38 +45,40 @@ def get_events(date):
     return requests.get(url).json().get("events", [])
 
 # -------------------------
-# BETMINES SCRAPER
+# BETMINES (SEM SCRAPING)
 # -------------------------
 def get_betmines_data():
-    url = "https://betmines.com/pt/palpite-futebol-hoje/dupla-chance"
-    headers = {"User-Agent": "Mozilla/5.0"}
+    try:
+        url = "https://betmines.com/api/predictions/double-chance"
+        headers = {"User-Agent": "Mozilla/5.0"}
 
-    response = requests.get(url, headers=headers)
-    soup = BeautifulSoup(response.text, "html.parser")
+        response = requests.get(url, headers=headers, timeout=10)
 
-    data = []
+        if response.status_code != 200:
+            return pd.DataFrame()
 
-    # ⚠️ Isso pode mudar conforme o HTML do site
-    matches = soup.select("table tbody tr")
+        data = response.json()
 
-    for m in matches:
-        cols = m.find_all("td")
-        if len(cols) >= 5:
-            jogo = cols[0].text.strip()
+        jogos = []
 
-            data.append({
-                "Jogo": jogo,
-                "1X": cols[2].text.strip(),
-                "X2": cols[3].text.strip(),
-                "12": cols[4].text.strip(),
+        for item in data:
+            jogos.append({
+                "Jogo": f"{item.get('home_team')} vs {item.get('away_team')}",
+                "1X": item.get("prob_1x"),
+                "X2": item.get("prob_x2"),
+                "12": item.get("prob_12"),
             })
 
-    return pd.DataFrame(data)
+        return pd.DataFrame(jogos)
+
+    except:
+        return pd.DataFrame()
 
 # -------------------------
-# MATCH ENTRE FONTES
+# MATCH ENTRE DADOS
 # -------------------------
 def merge_data(df_sofa, df_betmines):
+
     def normalize(name):
         return name.lower().replace(" vs ", " ").strip()
 
@@ -105,7 +106,7 @@ def is_same_day_br(event, selected_date):
 # -------------------------
 # UI
 # -------------------------
-st.title("⚽ Scanner PRO V6.2 + Betmines")
+st.title("⚽ Scanner PRO V6.3 (Betmines integrado)")
 
 date = st.date_input("Escolha a data")
 
@@ -141,7 +142,7 @@ if st.button("Analisar Jogos"):
     if results:
         df_sofa = pd.DataFrame(results).sort_values(by="Hora")
 
-        # 🔥 Coleta Betmines
+        # 🔥 Betmines
         df_betmines = get_betmines_data()
 
         # 🔥 Merge
