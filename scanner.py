@@ -3,6 +3,7 @@ import requests
 from datetime import datetime
 from zoneinfo import ZoneInfo
 import pandas as pd
+import re
 
 # -------------------------
 # CONFIG
@@ -48,54 +49,67 @@ def get_events(date):
         return []
 
 # -------------------------
-# BETMINES (SEM SCRAPING)
+# BETMINES (PEGANDO SÓ PROB %)
 # -------------------------
 def get_betmines_data():
     try:
-        url = "https://betmines.com/api/predictions/double-chance"
-        headers = {"User-Agent": "Mozilla/5.0"}
+        url = "https://betmines.com/pt/palpite-futebol-hoje/dupla-chance"
+        headers = {
+            "User-Agent": "Mozilla/5.0",
+            "Accept-Language": "pt-BR,pt;q=0.9"
+        }
 
         response = requests.get(url, headers=headers, timeout=10)
 
         if response.status_code != 200:
-            return pd.DataFrame()
+            return pd.DataFrame(columns=["Jogo", "1X", "12", "X2"])
 
-        data = response.json()
+        # pega TODAS as tabelas
+        tables = pd.read_html(response.text)
+
+        if not tables:
+            return pd.DataFrame(columns=["Jogo", "1X", "12", "X2"])
+
+        df = tables[0]
 
         jogos = []
 
-        for item in data:
-            jogos.append({
-                "Jogo": f"{item.get('home_team')} vs {item.get('away_team')}",
-                "1X": item.get("prob_1x"),
-                "X2": item.get("prob_x2"),
-                "12": item.get("prob_12"),
-            })
+        for _, row in df.iterrows():
+            try:
+                jogo = str(row.iloc[0])
 
-        df = pd.DataFrame(jogos)
+                # pega todos números da linha
+                nums = re.findall(r'\d+', str(row))
 
-        # Garantir colunas mesmo se vier vazio
-        if df.empty:
-            return pd.DataFrame(columns=["Jogo", "1X", "X2", "12"])
+                # precisa ter pelo menos 3 números
+                if len(nums) >= 3:
+                    jogos.append({
+                        "Jogo": jogo,
+                        "1X": nums[-3],
+                        "12": nums[-2],
+                        "X2": nums[-1],
+                    })
 
-        return df
+            except:
+                continue
+
+        return pd.DataFrame(jogos)
 
     except:
-        return pd.DataFrame(columns=["Jogo", "1X", "X2", "12"])
+        return pd.DataFrame(columns=["Jogo", "1X", "12", "X2"])
 
 # -------------------------
-# MATCH ENTRE DADOS (BLINDADO)
+# MATCH
 # -------------------------
 def merge_data(df_sofa, df_betmines):
 
     def normalize(name):
         return str(name).lower().replace(" vs ", " ").strip()
 
-    # Se Betmines falhar → adiciona colunas vazias
-    if df_betmines.empty or "Jogo" not in df_betmines.columns:
+    if df_betmines.empty:
         df_sofa["1X"] = None
-        df_sofa["X2"] = None
         df_sofa["12"] = None
+        df_sofa["X2"] = None
         return df_sofa
 
     df_sofa["key"] = df_sofa["Jogo"].apply(normalize)
@@ -122,7 +136,7 @@ def is_same_day_br(event, selected_date):
 # -------------------------
 # UI
 # -------------------------
-st.title("⚽ Scanner PRO V6.4 (Blindado + Betmines)")
+st.title("⚽ Scanner PRO V6.6 (Probabilidades Betmines)")
 
 date = st.date_input("Escolha a data")
 
@@ -158,13 +172,11 @@ if st.button("Analisar Jogos"):
     if results:
         df_sofa = pd.DataFrame(results).sort_values(by="Hora")
 
-        # 🔥 Betmines
         df_betmines = get_betmines_data()
 
         if df_betmines.empty:
-            st.warning("⚠️ Betmines não retornou dados hoje.")
+            st.warning("⚠️ Betmines não retornou dados.")
 
-        # 🔥 Merge seguro
         df_final = merge_data(df_sofa, df_betmines)
 
         st.dataframe(df_final, use_container_width=True)
