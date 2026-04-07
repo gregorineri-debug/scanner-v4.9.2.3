@@ -3,6 +3,7 @@ import requests
 from datetime import datetime
 from zoneinfo import ZoneInfo
 import pandas as pd
+from bs4 import BeautifulSoup
 
 # -------------------------
 # CONFIG
@@ -38,11 +39,54 @@ LEAGUE_NAMES = {
 }
 
 # -------------------------
-# API
+# API SOFASCORE
 # -------------------------
 def get_events(date):
     url = f"https://api.sofascore.com/api/v1/sport/football/scheduled-events/{date}"
     return requests.get(url).json().get("events", [])
+
+# -------------------------
+# BETMINES SCRAPER
+# -------------------------
+def get_betmines_data():
+    url = "https://betmines.com/pt/palpite-futebol-hoje/dupla-chance"
+    headers = {"User-Agent": "Mozilla/5.0"}
+
+    response = requests.get(url, headers=headers)
+    soup = BeautifulSoup(response.text, "html.parser")
+
+    data = []
+
+    # ⚠️ Isso pode mudar conforme o HTML do site
+    matches = soup.select("table tbody tr")
+
+    for m in matches:
+        cols = m.find_all("td")
+        if len(cols) >= 5:
+            jogo = cols[0].text.strip()
+
+            data.append({
+                "Jogo": jogo,
+                "1X": cols[2].text.strip(),
+                "X2": cols[3].text.strip(),
+                "12": cols[4].text.strip(),
+            })
+
+    return pd.DataFrame(data)
+
+# -------------------------
+# MATCH ENTRE FONTES
+# -------------------------
+def merge_data(df_sofa, df_betmines):
+    def normalize(name):
+        return name.lower().replace(" vs ", " ").strip()
+
+    df_sofa["key"] = df_sofa["Jogo"].apply(normalize)
+    df_betmines["key"] = df_betmines["Jogo"].apply(normalize)
+
+    merged = pd.merge(df_sofa, df_betmines, on="key", how="left")
+
+    return merged.drop(columns=["key"])
 
 # -------------------------
 # FILTROS
@@ -61,7 +105,7 @@ def is_same_day_br(event, selected_date):
 # -------------------------
 # UI
 # -------------------------
-st.title("⚽ Scanner PRO V6.1")
+st.title("⚽ Scanner PRO V6.2 + Betmines")
 
 date = st.date_input("Escolha a data")
 
@@ -95,9 +139,16 @@ if st.button("Analisar Jogos"):
             continue
 
     if results:
-        df = pd.DataFrame(results).sort_values(by="Hora")
-        st.dataframe(df, use_container_width=True)
-        st.write(f"Total de jogos: {len(df)}")
+        df_sofa = pd.DataFrame(results).sort_values(by="Hora")
+
+        # 🔥 Coleta Betmines
+        df_betmines = get_betmines_data()
+
+        # 🔥 Merge
+        df_final = merge_data(df_sofa, df_betmines)
+
+        st.dataframe(df_final, use_container_width=True)
+        st.write(f"Total de jogos: {len(df_final)}")
+
     else:
         st.warning("Nenhum jogo encontrado.")
-        
