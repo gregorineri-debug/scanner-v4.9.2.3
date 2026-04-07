@@ -41,8 +41,11 @@ LEAGUE_NAMES = {
 # API SOFASCORE
 # -------------------------
 def get_events(date):
-    url = f"https://api.sofascore.com/api/v1/sport/football/scheduled-events/{date}"
-    return requests.get(url).json().get("events", [])
+    try:
+        url = f"https://api.sofascore.com/api/v1/sport/football/scheduled-events/{date}"
+        return requests.get(url, timeout=10).json().get("events", [])
+    except:
+        return []
 
 # -------------------------
 # BETMINES (SEM SCRAPING)
@@ -69,18 +72,31 @@ def get_betmines_data():
                 "12": item.get("prob_12"),
             })
 
-        return pd.DataFrame(jogos)
+        df = pd.DataFrame(jogos)
+
+        # Garantir colunas mesmo se vier vazio
+        if df.empty:
+            return pd.DataFrame(columns=["Jogo", "1X", "X2", "12"])
+
+        return df
 
     except:
-        return pd.DataFrame()
+        return pd.DataFrame(columns=["Jogo", "1X", "X2", "12"])
 
 # -------------------------
-# MATCH ENTRE DADOS
+# MATCH ENTRE DADOS (BLINDADO)
 # -------------------------
 def merge_data(df_sofa, df_betmines):
 
     def normalize(name):
-        return name.lower().replace(" vs ", " ").strip()
+        return str(name).lower().replace(" vs ", " ").strip()
+
+    # Se Betmines falhar → adiciona colunas vazias
+    if df_betmines.empty or "Jogo" not in df_betmines.columns:
+        df_sofa["1X"] = None
+        df_sofa["X2"] = None
+        df_sofa["12"] = None
+        return df_sofa
 
     df_sofa["key"] = df_sofa["Jogo"].apply(normalize)
     df_betmines["key"] = df_betmines["Jogo"].apply(normalize)
@@ -106,7 +122,7 @@ def is_same_day_br(event, selected_date):
 # -------------------------
 # UI
 # -------------------------
-st.title("⚽ Scanner PRO V6.3 (Betmines integrado)")
+st.title("⚽ Scanner PRO V6.4 (Blindado + Betmines)")
 
 date = st.date_input("Escolha a data")
 
@@ -145,7 +161,10 @@ if st.button("Analisar Jogos"):
         # 🔥 Betmines
         df_betmines = get_betmines_data()
 
-        # 🔥 Merge
+        if df_betmines.empty:
+            st.warning("⚠️ Betmines não retornou dados hoje.")
+
+        # 🔥 Merge seguro
         df_final = merge_data(df_sofa, df_betmines)
 
         st.dataframe(df_final, use_container_width=True)
