@@ -5,3 +5,5 @@ requests
 matplotlib
 schedule
 beautifulsoup4
+streamlit
+lxml
