@@ -38,7 +38,7 @@ LEAGUE_NAMES = {
 }
 
 # -------------------------
-# FORÇA DA LIGA
+# FORÇA DA LIGA (ANTI-ZEBRA)
 # -------------------------
 LEAGUE_STRENGTH = {
     17: 1.0, 8: 1.0, 23: 1.0, 35: 1.0,
@@ -61,7 +61,7 @@ def get_events(date):
     return requests.get(url, timeout=10).json().get("events", [])
 
 # -------------------------
-# FILTROS BASE
+# FILTROS
 # -------------------------
 def is_valid_league(event):
     try:
@@ -119,9 +119,10 @@ def normalizar(forma, saldo, gols):
     return forma_n, saldo_n, ataque_n
 
 # -------------------------
-# SCORE
+# SCORE COM PESOS AJUSTADOS
 # -------------------------
-def calcular_score(forma, saldo, gols, league_id):
+def calcular_score(team_id, league_id):
+    forma, saldo, gols = get_team_data(team_id)
     forma_n, saldo_n, ataque_n = normalizar(forma, saldo, gols)
 
     base_score = (
@@ -132,52 +133,28 @@ def calcular_score(forma, saldo, gols, league_id):
 
     liga_strength = LEAGUE_STRENGTH.get(league_id, DEFAULT_LEAGUE_STRENGTH)
 
-    return round(base_score * liga_strength, 2)
+    final_score = base_score * liga_strength
+
+    return round(final_score, 2)
 
 # -------------------------
 # PICK
 # -------------------------
 def definir_pick(diff):
+
     if diff >= 3:
         return "Casa (1) 🔥" if diff >= 5 else "Casa (1)"
+
     elif diff <= -5:
         return "Fora (2) 🔥" if diff <= -7 else "Fora (2)"
+
     else:
         return "Equilibrado"
 
 # -------------------------
-# FILTRO V16
-# -------------------------
-def passar_filtros(f_home, s_home, g_home, f_away, s_away, g_away, league_id):
-
-    liga_strength = LEAGUE_STRENGTH.get(league_id, DEFAULT_LEAGUE_STRENGTH)
-
-    # 1. Forma mínima
-    if f_home < 1.2 and f_away < 1.2:
-        return False
-
-    # 2. Saldo não negativo (pelo menos um)
-    if s_home < 0 and s_away < 0:
-        return False
-
-    # 3. Diferença de forma
-    if abs(f_home - f_away) < 0.4:
-        return False
-
-    # 4. Liga forte
-    if liga_strength < 0.8:
-        return False
-
-    # 5. Ataque falso
-    if (g_home > 2 and s_home < 0.3) or (g_away > 2 and s_away < 0.3):
-        return False
-
-    return True
-
-# -------------------------
 # UI
 # -------------------------
-st.title("⚽ Scanner PRO V16 (Filtro Anti-Loss Ativado)")
+st.title("⚽ Scanner PRO V15.1 (Pesos Ajustados + Anti-Zebra)")
 
 date = st.date_input("Escolha a data")
 
@@ -204,21 +181,10 @@ if st.button("Analisar Jogos"):
             home_id = e["homeTeam"]["id"]
             away_id = e["awayTeam"]["id"]
 
-            f_home, s_home, g_home = get_team_data(home_id)
-            f_away, s_away, g_away = get_team_data(away_id)
-
-            # FILTRO V16
-            if not passar_filtros(f_home, s_home, g_home, f_away, s_away, g_away, league_id):
-                continue
-
-            score_home = calcular_score(f_home, s_home, g_home, league_id)
-            score_away = calcular_score(f_away, s_away, g_away, league_id)
+            score_home = calcular_score(home_id, league_id)
+            score_away = calcular_score(away_id, league_id)
 
             diff = round(score_home - score_away, 2)
-
-            # FILTRO FINAL DE ENTRADA
-            if not (diff >= 4 or diff <= -5):
-                continue
 
             pick = definir_pick(diff)
 
@@ -238,6 +204,6 @@ if st.button("Analisar Jogos"):
     if results:
         df = pd.DataFrame(results).sort_values(by="Hora")
         st.dataframe(df, use_container_width=True)
-        st.write(f"Total de jogos filtrados: {len(df)}")
+        st.write(f"Total de jogos: {len(df)}")
     else:
-        st.warning("Nenhum jogo passou nos filtros V16.")
+        st.warning("Nenhum jogo encontrado.")
