@@ -55,9 +55,7 @@ def get_team_last_matches(team_id):
         url = f"https://api.sofascore.com/api/v1/team/{team_id}/events/last/5"
         data = requests.get(url, timeout=10).json()["events"]
 
-        pontos = 0
-        gols_marcados = 0
-        gols_sofridos = 0
+        pontos, gm, gs = 0, 0, 0
 
         for e in data:
             home = e["homeTeam"]["id"] == team_id
@@ -65,39 +63,41 @@ def get_team_last_matches(team_id):
             as_ = e["awayScore"]["current"]
 
             if home:
-                gols_marcados += hs
-                gols_sofridos += as_
+                gm += hs; gs += as_
                 pontos += 3 if hs > as_ else 1 if hs == as_ else 0
             else:
-                gols_marcados += as_
-                gols_sofridos += hs
+                gm += as_; gs += hs
                 pontos += 3 if as_ > hs else 1 if as_ == hs else 0
 
         jogos = len(data)
         if jogos == 0:
             return 1,1,1
 
-        return pontos/jogos, gols_marcados/jogos, gols_sofridos/jogos
+        return pontos/jogos, gm/jogos, gs/jogos
 
     except:
         return 1,1,1
 
 # -------------------------
-# FORÇA
+# FORÇA REAL
 # -------------------------
 def get_team_strength(team_id):
+
     forma, ataque, defesa = get_team_last_matches(team_id)
+
     xg = ataque - defesa
 
-    return (
-        forma * 10 +
-        ataque * 5 +
-        (2 - defesa) * 5 +
-        xg * 5
+    strength = (
+        forma * 15 +        # peso maior
+        ataque * 8 +
+        (2 - defesa) * 8 +
+        xg * 10
     )
 
+    return strength
+
 # -------------------------
-# PROBABILIDADES
+# PROBABILIDADES (CORRIGIDO)
 # -------------------------
 def gerar_probabilidades(home_id, away_id):
 
@@ -106,8 +106,12 @@ def gerar_probabilidades(home_id, away_id):
 
     diff = home - away
 
-    prob_home = max(min(50 + diff * 1.2, 85), 35)
-    prob_away = max(min(50 - diff * 1.2, 85), 35)
+    # 🔥 mais agressivo
+    prob_home = 50 + diff * 2.5
+    prob_away = 50 - diff * 2.5
+
+    prob_home = max(min(prob_home, 90), 30)
+    prob_away = max(min(prob_away, 90), 30)
 
     prob_1x = round(min(prob_home + 10, 95))
     prob_x2 = round(min(prob_away + 10, 95))
@@ -116,24 +120,48 @@ def gerar_probabilidades(home_id, away_id):
     return prob_1x, prob_12, prob_x2
 
 # -------------------------
-# CONSENSO (CORRIGIDO)
+# CONSENSO INTELIGENTE (NOVO)
 # -------------------------
 def aplicar_consenso(df):
 
-    df["Score_Consenso"] = (
-        (df["1X"] + df["12"] + df["X2"]) / 3
-    ).astype(int)
+    scores = []
+
+    for _, row in df.iterrows():
+
+        favorito = max(row["1X"], row["X2"])
+        diferenca = abs(row["1X"] - row["X2"])
+
+        score = (
+            favorito * 0.6 +
+            diferenca * 0.4
+        )
+
+        scores.append(int(score))
+
+    df["Score_Consenso"] = scores
 
     return df.sort_values(by="Score_Consenso", ascending=False)
 
 # -------------------------
-# GREG
+# GREG STATS CORRIGIDO
 # -------------------------
 def aplicar_greg(df):
-    df["Pick_Vencedor"] = df.apply(
-        lambda x: "Casa (1)" if x["1X"] > x["X2"] else "Fora (2)",
-        axis=1
-    )
+
+    picks = []
+
+    for _, row in df.iterrows():
+
+        diff = row["1X"] - row["X2"]
+
+        if diff >= 8:
+            picks.append("Casa (1)")
+        elif diff <= -8:
+            picks.append("Fora (2)")
+        else:
+            picks.append("Equilibrado")
+
+    df["Pick_Vencedor"] = picks
+
     return df
 
 # -------------------------
@@ -155,7 +183,7 @@ def is_same_day_br(event, selected_date):
 # -------------------------
 # UI
 # -------------------------
-st.title("⚽ Scanner PRO V10 (Modelo Avançado Real)")
+st.title("⚽ Scanner PRO V11 (Modelo Profissional Corrigido)")
 
 date = st.date_input("Escolha a data")
 
