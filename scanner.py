@@ -73,18 +73,50 @@ def gerar_probabilidades(row):
 
     prob_base = base * fator_hora + variacao
 
-    prob_1x = round(min(max(prob_base * 100, 55), 90))
-    prob_12 = round(min(max((prob_base - 0.05) * 100, 50), 85))
-    prob_x2 = round(min(max((prob_base - 0.08) * 100, 45), 80))
+    prob_1x = round(min(max(prob_base * 100, 58), 92))
+    prob_12 = round(min(max((prob_base - 0.03) * 100, 55), 88))
+    prob_x2 = round(min(max((prob_base - 0.06) * 100, 50), 85))
 
-    return prob_1x, prob_12, prob_x2
+    return prob_1x, prob_12, prob_x2, fator_hora
 
 # -------------------------
-# CONSENSO PRO (FILTRO)
+# CONSENSO INTELIGENTE
 # -------------------------
-def aplicar_consenso(df):
-    df["Score_Consenso"] = (df["1X"] + df["12"] + df["X2"]) / 3
-    return df[df["Score_Consenso"] >= 65]
+def aplicar_consenso_inteligente(df):
+
+    scores = []
+
+    for _, row in df.iterrows():
+
+        media_probs = (row["1X"] + row["12"] + row["X2"]) / 3
+
+        # peso da liga
+        peso_liga = league_strength(row["LeagueID"]) * 100
+
+        # estabilidade (hora)
+        estabilidade = row["FatorHora"] * 100
+
+        # equilíbrio do jogo (diferença entre probabilidades)
+        equilibrio = 100 - abs(row["1X"] - row["X2"])
+
+        score_final = (
+            media_probs * 0.5 +
+            peso_liga * 0.2 +
+            estabilidade * 0.15 +
+            equilibrio * 0.15
+        )
+
+        scores.append(round(score_final, 2))
+
+    df["Score_Consenso"] = scores
+
+    # ordena pelos melhores
+    df = df.sort_values(by="Score_Consenso", ascending=False)
+
+    # 🔥 mantém TOP 30% ou mínimo 5 jogos
+    top_n = max(5, int(len(df) * 0.3))
+
+    return df.head(top_n)
 
 # -------------------------
 # GREG STATS X V4.5
@@ -95,7 +127,6 @@ def aplicar_greg_stats(df):
 
     for _, row in df.iterrows():
 
-        # lógica de vencedor baseada em força relativa
         if row["1X"] >= row["X2"]:
             pick = "Casa (1)"
         else:
@@ -127,7 +158,7 @@ def is_same_day_br(event, selected_date):
 # -------------------------
 # UI
 # -------------------------
-st.title("⚽ Scanner PRO V7 (Consenso PRO + Greg Stats V4.5)")
+st.title("⚽ Scanner PRO V8 (Consenso Inteligente + Greg Stats V4.5)")
 
 date = st.date_input("Escolha a data")
 
@@ -166,16 +197,20 @@ if st.button("Analisar Jogos"):
 
         # probabilidades
         probs = df.apply(gerar_probabilidades, axis=1)
-        df["1X"], df["12"], df["X2"] = zip(*probs)
+        df["1X"], df["12"], df["X2"], df["FatorHora"] = zip(*probs)
 
-        # aplica CONSENSO PRO
-        df = aplicar_consenso(df)
+        # CONSENSO INTELIGENTE
+        df = aplicar_consenso_inteligente(df)
 
-        # aplica GREG STATS
+        # GREG STATS
         df = aplicar_greg_stats(df)
 
-        st.dataframe(df.drop(columns=["LeagueID"]), use_container_width=True)
-        st.write(f"Jogos filtrados: {len(df)}")
+        st.dataframe(
+            df.drop(columns=["LeagueID", "FatorHora"]),
+            use_container_width=True
+        )
+
+        st.write(f"Jogos selecionados (TOP): {len(df)}")
 
     else:
         st.warning("Nenhum jogo encontrado.")
