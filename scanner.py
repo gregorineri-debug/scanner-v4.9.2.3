@@ -79,25 +79,22 @@ def get_team_last_matches(team_id):
         return 1,1,1
 
 # -------------------------
-# FORÇA REAL
+# FORÇA NORMALIZADA (CORRIGIDA)
 # -------------------------
 def get_team_strength(team_id):
 
     forma, ataque, defesa = get_team_last_matches(team_id)
 
-    xg = ataque - defesa
+    forma_score = forma * 20          # até ~60
+    ataque_score = ataque * 10
+    defesa_score = (3 - defesa) * 10
 
-    strength = (
-        forma * 15 +        # peso maior
-        ataque * 8 +
-        (2 - defesa) * 8 +
-        xg * 10
-    )
+    strength = forma_score + ataque_score + defesa_score
 
     return strength
 
 # -------------------------
-# PROBABILIDADES (CORRIGIDO)
+# PROBABILIDADES (ESCALA REAL)
 # -------------------------
 def gerar_probabilidades(home_id, away_id):
 
@@ -106,21 +103,21 @@ def gerar_probabilidades(home_id, away_id):
 
     diff = home - away
 
-    # 🔥 mais agressivo
-    prob_home = 50 + diff * 2.5
-    prob_away = 50 - diff * 2.5
+    # 🔥 ESCALA CORRIGIDA (AGORA FUNCIONA)
+    prob_home = 50 + diff * 5
+    prob_away = 50 - diff * 5
 
-    prob_home = max(min(prob_home, 90), 30)
-    prob_away = max(min(prob_away, 90), 30)
+    prob_home = max(min(prob_home, 90), 20)
+    prob_away = max(min(prob_away, 90), 20)
 
-    prob_1x = round(min(prob_home + 10, 95))
-    prob_x2 = round(min(prob_away + 10, 95))
-    prob_12 = round((prob_home + prob_away) / 2)
+    prob_1x = round(min(prob_home + 5, 95))
+    prob_x2 = round(min(prob_away + 5, 95))
+    prob_12 = round(100 - abs(prob_home - prob_away))
 
     return prob_1x, prob_12, prob_x2
 
 # -------------------------
-# CONSENSO INTELIGENTE (NOVO)
+# CONSENSO INTELIGENTE
 # -------------------------
 def aplicar_consenso(df):
 
@@ -132,8 +129,8 @@ def aplicar_consenso(df):
         diferenca = abs(row["1X"] - row["X2"])
 
         score = (
-            favorito * 0.6 +
-            diferenca * 0.4
+            favorito * 0.7 +
+            diferenca * 0.3
         )
 
         scores.append(int(score))
@@ -143,7 +140,7 @@ def aplicar_consenso(df):
     return df.sort_values(by="Score_Consenso", ascending=False)
 
 # -------------------------
-# GREG STATS CORRIGIDO
+# GREG STATS REAL
 # -------------------------
 def aplicar_greg(df):
 
@@ -153,9 +150,9 @@ def aplicar_greg(df):
 
         diff = row["1X"] - row["X2"]
 
-        if diff >= 8:
+        if diff >= 10:
             picks.append("Casa (1)")
-        elif diff <= -8:
+        elif diff <= -10:
             picks.append("Fora (2)")
         else:
             picks.append("Equilibrado")
@@ -183,7 +180,7 @@ def is_same_day_br(event, selected_date):
 # -------------------------
 # UI
 # -------------------------
-st.title("⚽ Scanner PRO V11 (Modelo Profissional Corrigido)")
+st.title("⚽ Scanner PRO V11 FINAL (Escala Corrigida)")
 
 date = st.date_input("Escolha a data")
 
