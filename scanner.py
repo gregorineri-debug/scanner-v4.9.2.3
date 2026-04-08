@@ -80,7 +80,7 @@ def gerar_probabilidades(row):
     return prob_1x, prob_12, prob_x2, fator_hora
 
 # -------------------------
-# CONSENSO INTELIGENTE
+# CONSENSO INTELIGENTE (SEM CORTE)
 # -------------------------
 def aplicar_consenso_inteligente(df):
 
@@ -89,14 +89,8 @@ def aplicar_consenso_inteligente(df):
     for _, row in df.iterrows():
 
         media_probs = (row["1X"] + row["12"] + row["X2"]) / 3
-
-        # peso da liga
         peso_liga = league_strength(row["LeagueID"]) * 100
-
-        # estabilidade (hora)
         estabilidade = row["FatorHora"] * 100
-
-        # equilíbrio do jogo (diferença entre probabilidades)
         equilibrio = 100 - abs(row["1X"] - row["X2"])
 
         score_final = (
@@ -110,13 +104,10 @@ def aplicar_consenso_inteligente(df):
 
     df["Score_Consenso"] = scores
 
-    # ordena pelos melhores
+    # 🔥 Apenas ordena (não corta mais)
     df = df.sort_values(by="Score_Consenso", ascending=False)
 
-    # 🔥 mantém TOP 30% ou mínimo 5 jogos
-    top_n = max(5, int(len(df) * 0.3))
-
-    return df.head(top_n)
+    return df
 
 # -------------------------
 # GREG STATS X V4.5
@@ -158,7 +149,7 @@ def is_same_day_br(event, selected_date):
 # -------------------------
 # UI
 # -------------------------
-st.title("⚽ Scanner PRO V8 (Consenso Inteligente + Greg Stats V4.5)")
+st.title("⚽ Scanner PRO V8 (Lista Completa + Consenso Inteligente)")
 
 date = st.date_input("Escolha a data")
 
@@ -195,14 +186,10 @@ if st.button("Analisar Jogos"):
     if results:
         df = pd.DataFrame(results).sort_values(by="Hora")
 
-        # probabilidades
         probs = df.apply(gerar_probabilidades, axis=1)
         df["1X"], df["12"], df["X2"], df["FatorHora"] = zip(*probs)
 
-        # CONSENSO INTELIGENTE
         df = aplicar_consenso_inteligente(df)
-
-        # GREG STATS
         df = aplicar_greg_stats(df)
 
         st.dataframe(
@@ -210,7 +197,7 @@ if st.button("Analisar Jogos"):
             use_container_width=True
         )
 
-        st.write(f"Jogos selecionados (TOP): {len(df)}")
+        st.write(f"Total de jogos avaliados: {len(df)}")
 
     else:
         st.warning("Nenhum jogo encontrado.")
