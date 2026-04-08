@@ -19,14 +19,6 @@ VALID_LEAGUE_IDS = [
     238,239,152,40,215,52,278
 ]
 
-LEAGUE_NAMES = {
-    325: "Brasileirão",
-    390: "Série B",
-    17: "Premier League",
-    8: "La Liga",
-    23: "Serie A"
-}
-
 LEAGUE_STRENGTH = {
     17:1.0, 8:1.0, 23:1.0, 35:1.0,
     34:0.95, 238:0.9,
@@ -48,20 +40,7 @@ def get_events(date):
     return requests.get(url, timeout=10).json().get("events", [])
 
 # -------------------------
-# FILTROS BASE
-# -------------------------
-def is_valid_league(event):
-    try:
-        return event["tournament"]["uniqueTournament"]["id"] in VALID_LEAGUE_IDS
-    except:
-        return False
-
-def is_same_day_br(event, selected_date):
-    utc = datetime.utcfromtimestamp(event["startTimestamp"]).replace(tzinfo=ZoneInfo("UTC"))
-    return utc.astimezone(BR_TZ).date() == selected_date
-
-# -------------------------
-# DADOS DO TIME
+# FEATURES
 # -------------------------
 def get_team_events(team_id, limit=10):
     try:
@@ -73,9 +52,6 @@ def get_team_events(team_id, limit=10):
     except:
         return []
 
-# -------------------------
-# FEATURES
-# -------------------------
 def extrair_features(team_id):
 
     events = get_team_events(team_id, 10)
@@ -92,10 +68,8 @@ def extrair_features(team_id):
         hs = e["homeScore"]["current"]
         as_ = e["awayScore"]["current"]
 
-        if home:
-            gm, gs = hs, as_
-        else:
-            gm, gs = as_, hs
+        gm = hs if home else as_
+        gs = as_ if home else hs
 
         gols_marcados.append(gm)
         gols_sofridos.append(gs)
@@ -112,37 +86,28 @@ def extrair_features(team_id):
     forma = pontos.mean()
     saldo = (np.array(gols_marcados) - np.array(gols_sofridos)).mean()
     defesa = np.mean(gols_sofridos)
-    ataque = np.mean(gols_marcados)
     volatilidade = pontos.std()
 
-    return forma, saldo, ataque, defesa, 0, volatilidade
+    return forma, saldo, defesa, volatilidade
 
 # -------------------------
-# NOVO MOTOR SIMPLES
+# SCORE SIMPLES
 # -------------------------
-def calcular_score_simples(team_id, league_id, is_home):
+def calcular_score(team_id, league_id, is_home):
 
-    forma, saldo, ataque, defesa, _, vol = extrair_features(team_id)
+    forma, saldo, defesa, vol = extrair_features(team_id)
 
     forma_n = forma / 3
     saldo_n = max(min(saldo / 3,1),-1)
     defesa_n = 1 - min(defesa / 3,1)
 
-    # AJUSTE AUTOMÁTICO DE PESO
+    # ajuste dinâmico
     if abs(forma - 1.5) < 0.3:
-        peso_forma = 4
-        peso_saldo = 3
-        peso_defesa = 7
+        pf, ps, pd = 4, 3, 7
     else:
-        peso_forma = 6
-        peso_saldo = 4
-        peso_defesa = 6
+        pf, ps, pd = 6, 4, 6
 
-    score = (
-        forma_n * peso_forma +
-        saldo_n * peso_saldo +
-        defesa_n * peso_defesa
-    )
+    score = (forma_n * pf) + (saldo_n * ps) + (defesa_n * pd)
 
     if is_home:
         score *= 1.08
@@ -154,117 +119,117 @@ def calcular_score_simples(team_id, league_id, is_home):
     return round(score * liga * 10, 2)
 
 # -------------------------
-# CLASSIFICAÇÃO
+# PROBABILIDADE + EV
 # -------------------------
-def classificar(diff, vol_home, vol_away):
+def calcular_probabilidade(diff):
+    prob = 0.5 + (abs(diff) * 0.04)
+    return min(prob, 0.85)
 
-    risco = max(vol_home, vol_away)
+def calcular_ev(prob, odd):
+    return (prob * odd) - 1
 
-    if abs(diff) >= 6 and risco < 1.2:
+def classificar_ev(ev):
+    if ev > 0.15:
         return "🟢 ELITE"
-    elif abs(diff) >= 3:
-        return "🟡 MÉDIA"
+    elif ev > 0.08:
+        return "🟡 BOA"
+    elif ev > 0:
+        return "⚪ FRACA"
     else:
-        return "🔴 SKIP"
-
-# -------------------------
-# CONSENSO PRO
-# -------------------------
-def get_consenso_pro(home, away):
-    casa = random.randint(40, 80)
-    fora = 100 - casa
-    return casa, fora
-
-def validar_consenso(pick, casa, fora):
-    if pick == "Casa":
-        if casa >= 65:
-            return "🟢 CONFIRMADO"
-        elif casa >= 55:
-            return "🟡 MÉDIO"
-        else:
-            return "🔴 REJEITAR"
-    else:
-        if fora >= 65:
-            return "🟢 CONFIRMADO"
-        elif fora >= 55:
-            return "🟡 MÉDIO"
-        else:
-            return "🔴 REJEITAR"
+        return "❌ RUIM"
 
 # -------------------------
 # UI
 # -------------------------
-st.title("⚽ Scanner PRO V1 (Motor Simples Inteligente + Consenso PRO)")
+st.title("⚽ Scanner PRO V2 (EV+ Value Bet)")
 
 date = st.date_input("Escolha a data")
 
 events = get_events(date.strftime("%Y-%m-%d"))
 
-filtered_events = [
-    e for e in events
-    if is_valid_league(e) and is_same_day_br(e, date)
-]
+filtered_events = events
 
-st.write(f"Jogos válidos: {len(filtered_events)}")
+st.write(f"Jogos: {len(filtered_events)}")
 
-if st.button("Analisar Jogos"):
+st.subheader("Inserir odds manualmente")
+
+odds_input = st.text_area(
+    "Formato: TimeA vs TimeB = odd_casa,odd_fora\nEx:\nFlamengo vs Santos = 1.80,4.50"
+)
+
+# -------------------------
+# PARSE ODDS
+# -------------------------
+odds_dict = {}
+
+for line in odds_input.split("\n"):
+    try:
+        jogo, odds = line.split("=")
+        casa, fora = odds.split(",")
+        odds_dict[jogo.strip()] = (float(casa), float(fora))
+    except:
+        continue
+
+# -------------------------
+# PROCESSAMENTO
+# -------------------------
+if st.button("Analisar com EV+"):
 
     results = []
 
     for e in filtered_events:
         try:
-            utc = datetime.utcfromtimestamp(e["startTimestamp"]).replace(tzinfo=ZoneInfo("UTC"))
-            hora = utc.astimezone(BR_TZ).strftime("%H:%M")
-
             league_id = e["tournament"]["uniqueTournament"]["id"]
+
+            home = e["homeTeam"]["name"]
+            away = e["awayTeam"]["name"]
+
+            match_name = f"{home} vs {away}"
+
+            if match_name not in odds_dict:
+                continue
+
+            odd_home, odd_away = odds_dict[match_name]
 
             home_id = e["homeTeam"]["id"]
             away_id = e["awayTeam"]["id"]
 
-            score_home = calcular_score_simples(home_id, league_id, True)
-            score_away = calcular_score_simples(away_id, league_id, False)
+            score_home = calcular_score(home_id, league_id, True)
+            score_away = calcular_score(away_id, league_id, False)
 
-            diff = round(score_home - score_away, 2)
+            diff = score_home - score_away
 
-            _, _, _, _, _, vol_home = extrair_features(home_id)
-            _, _, _, _, _, vol_away = extrair_features(away_id)
-
-            nivel = classificar(diff, vol_home, vol_away)
-
-            # SKIP automático
-            if nivel == "🔴 SKIP":
+            if abs(diff) < 3:
                 continue
 
             pick = "Casa" if diff > 0 else "Fora"
 
-            consenso_casa, consenso_fora = get_consenso_pro(
-                e['homeTeam']['name'],
-                e['awayTeam']['name']
-            )
+            prob = calcular_probabilidade(diff)
 
-            status = validar_consenso(pick, consenso_casa, consenso_fora)
+            odd = odd_home if pick == "Casa" else odd_away
 
-            if status == "🔴 REJEITAR":
+            ev = calcular_ev(prob, odd)
+
+            if ev <= 0:
                 continue
 
+            qualidade = classificar_ev(ev)
+
             results.append({
-                "Hora": hora,
-                "Liga": LEAGUE_NAMES.get(league_id, "Outra"),
-                "Jogo": f"{e['homeTeam']['name']} vs {e['awayTeam']['name']}",
-                "Diff": diff,
+                "Jogo": match_name,
                 "Pick": pick,
-                "Nível": nivel,
-                "Consenso Casa %": consenso_casa,
-                "Consenso Fora %": consenso_fora,
-                "Status Final": status
+                "Odd": odd,
+                "Prob": round(prob*100,1),
+                "EV": round(ev,3),
+                "Qualidade": qualidade
             })
 
         except:
             continue
 
     if results:
-        df = pd.DataFrame(results).sort_values(by="Diff", ascending=False)
+        df = pd.DataFrame(results).sort_values(by="EV", ascending=False)
         st.dataframe(df, use_container_width=True)
-        st.write(f"Total de picks finais: {len(df)}")
+        st.write(f"Apostas com valor: {len(df)}")
     else:
-        st.warning("Nenhuma pick passou nos filtros.")
+        st.warning("Nenhuma aposta com EV+ encontrada.")
