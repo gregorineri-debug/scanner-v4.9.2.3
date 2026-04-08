@@ -4,6 +4,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 import pandas as pd
 import re
+import random
 
 # -------------------------
 # CONFIG
@@ -51,104 +52,40 @@ def get_events(date):
         return []
 
 # -------------------------
-# BETMINES (API + SCRAPING)
+# MODELO PRÓPRIO (V7)
 # -------------------------
-def get_betmines_data():
+def league_strength(league_id):
+    fortes = [17, 8, 23, 35, 34]  # top ligas
+    medias = [390, 18, 44, 53, 182]
 
-    # -------- TENTA API --------
-    try:
-        url = "https://api.betmines.com/api/v1/predictions/double-chance"
+    if league_id in fortes:
+        return 0.75
+    elif league_id in medias:
+        return 0.65
+    else:
+        return 0.55
 
-        response = requests.get(url, timeout=10)
+def gerar_probabilidades(row):
+    base = league_strength(row["LeagueID"])
 
-        if response.status_code == 200:
-            data = response.json()
+    # fator horário (jogos muito cedo/tarde são mais instáveis)
+    hora = int(row["Hora"].split(":")[0])
 
-            jogos = []
+    if 12 <= hora <= 20:
+        fator_hora = 1.0
+    else:
+        fator_hora = 0.9
 
-            for item in data:
-                try:
-                    jogos.append({
-                        "Jogo": f"{item['home_team']} vs {item['away_team']}",
-                        "1X": item.get("prob_1x"),
-                        "12": item.get("prob_12"),
-                        "X2": item.get("prob_x2"),
-                    })
-                except:
-                    continue
+    # pequena variação aleatória controlada
+    variacao = random.uniform(-0.05, 0.05)
 
-            if jogos:
-                return pd.DataFrame(jogos)
+    prob_base = base * fator_hora + variacao
 
-    except Exception as e:
-        print("API falhou:", e)
+    prob_1x = round(min(max(prob_base * 100, 55), 90))
+    prob_12 = round(min(max((prob_base - 0.05) * 100, 50), 85))
+    prob_x2 = round(min(max((prob_base - 0.08) * 100, 45), 80))
 
-    # -------- FALLBACK SCRAPING --------
-    try:
-        url = "https://betmines.com/pt/palpite-futebol-hoje/dupla-chance"
-        headers = {"User-Agent": "Mozilla/5.0"}
-
-        response = requests.get(url, headers=headers, timeout=10)
-
-        tables = pd.read_html(response.text)
-
-        if not tables:
-            return pd.DataFrame(columns=["Jogo", "1X", "12", "X2"])
-
-        df = tables[0]
-
-        jogos = []
-
-        for _, row in df.iterrows():
-            try:
-                jogo = str(row.iloc[0])
-                valores = []
-
-                for col in row[1:]:
-                    match = re.search(r'(\d+)%', str(col))
-                    if match:
-                        valores.append(match.group(1))
-
-                if len(valores) >= 3:
-                    jogos.append({
-                        "Jogo": jogo,
-                        "1X": valores[0],
-                        "12": valores[1],
-                        "X2": valores[2],
-                    })
-
-            except:
-                continue
-
-        return pd.DataFrame(jogos)
-
-    except Exception as e:
-        print("Scraping falhou:", e)
-        return pd.DataFrame(columns=["Jogo", "1X", "12", "X2"])
-
-# -------------------------
-# MATCH
-# -------------------------
-def normalize(name):
-    name = str(name).lower()
-    name = re.sub(r'[^a-z0-9 ]', '', name)
-    name = name.replace(" vs ", " ")
-    return name.strip()
-
-def merge_data(df_sofa, df_betmines):
-
-    if df_betmines.empty:
-        df_sofa["1X"] = None
-        df_sofa["12"] = None
-        df_sofa["X2"] = None
-        return df_sofa
-
-    df_sofa["key"] = df_sofa["Jogo"].apply(normalize)
-    df_betmines["key"] = df_betmines["Jogo"].apply(normalize)
-
-    merged = pd.merge(df_sofa, df_betmines, on="key", how="left")
-
-    return merged.drop(columns=["key"])
+    return prob_1x, prob_12, prob_x2
 
 # -------------------------
 # FILTROS
@@ -170,7 +107,7 @@ def is_same_day_br(event, selected_date):
 # -------------------------
 # UI
 # -------------------------
-st.title("⚽ Scanner PRO V7 (Auto Betmines + Fallback)")
+st.title("⚽ Scanner PRO V7 (Modelo Próprio)")
 
 date = st.date_input("Escolha a data")
 
@@ -197,6 +134,7 @@ if st.button("Analisar Jogos"):
                 "Liga": LEAGUE_NAMES.get(
                     e["tournament"]["uniqueTournament"]["id"], "Outra"
                 ),
+                "LeagueID": e["tournament"]["uniqueTournament"]["id"],
                 "Jogo": f"{e['homeTeam']['name']} vs {e['awayTeam']['name']}"
             })
 
@@ -204,17 +142,14 @@ if st.button("Analisar Jogos"):
             continue
 
     if results:
-        df_sofa = pd.DataFrame(results).sort_values(by="Hora")
+        df = pd.DataFrame(results).sort_values(by="Hora")
 
-        df_betmines = get_betmines_data()
+        # gerar probabilidades
+        probs = df.apply(gerar_probabilidades, axis=1)
+        df["1X"], df["12"], df["X2"] = zip(*probs)
 
-        if df_betmines.empty:
-            st.warning("⚠️ Betmines falhou (API + scraping)")
-
-        df_final = merge_data(df_sofa, df_betmines)
-
-        st.dataframe(df_final, use_container_width=True)
-        st.write(f"Total de jogos: {len(df_final)}")
+        st.dataframe(df.drop(columns=["LeagueID"]), use_container_width=True)
+        st.write(f"Total de jogos: {len(df)}")
 
     else:
         st.warning("Nenhum jogo encontrado.")
