@@ -3,7 +3,6 @@ import requests
 from datetime import datetime
 from zoneinfo import ZoneInfo
 import pandas as pd
-import random
 
 # -------------------------
 # CONFIG
@@ -44,89 +43,93 @@ LEAGUE_NAMES = {
 def get_events(date):
     try:
         url = f"https://api.sofascore.com/api/v1/sport/football/scheduled-events/{date}"
-        response = requests.get(url, timeout=10)
-        return response.json().get("events", [])
+        return requests.get(url, timeout=10).json().get("events", [])
     except:
         return []
 
 # -------------------------
-# MODELO BASE
+# PEGAR DADOS DO TIME
 # -------------------------
-def league_strength(league_id):
-    fortes = [17, 8, 23, 35, 34]
-    medias = [390, 18, 44, 53, 182]
+def get_team_strength(team_id):
+    try:
+        url = f"https://api.sofascore.com/api/v1/team/{team_id}/unique-tournament/last/standings"
+        data = requests.get(url, timeout=10).json()
 
-    if league_id in fortes:
-        return 0.75
-    elif league_id in medias:
-        return 0.65
-    else:
-        return 0.55
+        team = data["standings"][0]["rows"]
 
-def gerar_probabilidades(row):
-    base = league_strength(row["LeagueID"])
+        for t in team:
+            if t["team"]["id"] == team_id:
+                position = t["position"]
+                points = t["points"]
 
-    hora = int(row["Hora"].split(":")[0])
-    fator_hora = 1.0 if 12 <= hora <= 20 else 0.9
+                # score simples
+                strength = (100 - position) + (points * 0.5)
+                return strength
 
-    variacao = random.uniform(-0.05, 0.05)
+    except:
+        return 50  # fallback
 
-    prob_base = base * fator_hora + variacao
-
-    prob_1x = round(min(max(prob_base * 100, 58), 92))
-    prob_12 = round(min(max((prob_base - 0.03) * 100, 55), 88))
-    prob_x2 = round(min(max((prob_base - 0.06) * 100, 50), 85))
-
-    return prob_1x, prob_12, prob_x2, fator_hora
+    return 50
 
 # -------------------------
-# CONSENSO INTELIGENTE (SEM CORTE)
+# GERAR PROBABILIDADES REAIS
 # -------------------------
-def aplicar_consenso_inteligente(df):
+def gerar_probabilidades_real(home_id, away_id):
+
+    home_strength = get_team_strength(home_id)
+    away_strength = get_team_strength(away_id)
+
+    diff = home_strength - away_strength
+
+    # normaliza diferença
+    prob_home = 50 + diff * 0.5
+    prob_away = 50 - diff * 0.5
+
+    # limites
+    prob_home = max(min(prob_home, 85), 40)
+    prob_away = max(min(prob_away, 85), 40)
+
+    # mercados
+    prob_1x = round(min(prob_home + 15, 95))
+    prob_x2 = round(min(prob_away + 15, 95))
+    prob_12 = round((prob_home + prob_away) / 2)
+
+    return prob_1x, prob_12, prob_x2
+
+# -------------------------
+# CONSENSO INTELIGENTE
+# -------------------------
+def aplicar_consenso(df):
 
     scores = []
 
     for _, row in df.iterrows():
 
-        media_probs = (row["1X"] + row["12"] + row["X2"]) / 3
-        peso_liga = league_strength(row["LeagueID"]) * 100
-        estabilidade = row["FatorHora"] * 100
+        media = (row["1X"] + row["12"] + row["X2"]) / 3
         equilibrio = 100 - abs(row["1X"] - row["X2"])
 
-        score_final = (
-            media_probs * 0.5 +
-            peso_liga * 0.2 +
-            estabilidade * 0.15 +
-            equilibrio * 0.15
-        )
+        score = (media * 0.7) + (equilibrio * 0.3)
 
-        scores.append(round(score_final, 2))
+        scores.append(round(score, 2))
 
     df["Score_Consenso"] = scores
-
-    # 🔥 Apenas ordena (não corta mais)
-    df = df.sort_values(by="Score_Consenso", ascending=False)
-
-    return df
+    return df.sort_values(by="Score_Consenso", ascending=False)
 
 # -------------------------
-# GREG STATS X V4.5
+# GREG STATS X V4.5 (REAL)
 # -------------------------
-def aplicar_greg_stats(df):
+def aplicar_greg(df):
 
     picks = []
 
     for _, row in df.iterrows():
 
-        if row["1X"] >= row["X2"]:
-            pick = "Casa (1)"
+        if row["1X"] > row["X2"]:
+            picks.append("Casa (1)")
         else:
-            pick = "Fora (2)"
-
-        picks.append(pick)
+            picks.append("Fora (2)")
 
     df["Pick_Vencedor"] = picks
-
     return df
 
 # -------------------------
@@ -141,15 +144,14 @@ def is_valid_league(event):
 def is_same_day_br(event, selected_date):
     try:
         utc = datetime.utcfromtimestamp(event["startTimestamp"]).replace(tzinfo=ZoneInfo("UTC"))
-        br_time = utc.astimezone(BR_TZ)
-        return br_time.date() == selected_date
+        return utc.astimezone(BR_TZ).date() == selected_date
     except:
         return False
 
 # -------------------------
 # UI
 # -------------------------
-st.title("⚽ Scanner PRO V8 (Lista Completa + Consenso Inteligente)")
+st.title("⚽ Scanner PRO V9 (Modelo Real + Greg Stats V4.5)")
 
 date = st.date_input("Escolha a data")
 
@@ -169,34 +171,32 @@ if st.button("Analisar Jogos"):
     for e in filtered_events:
         try:
             utc = datetime.utcfromtimestamp(e["startTimestamp"]).replace(tzinfo=ZoneInfo("UTC"))
-            br_time = utc.astimezone(BR_TZ).strftime("%H:%M")
+            hora = utc.astimezone(BR_TZ).strftime("%H:%M")
+
+            home_id = e["homeTeam"]["id"]
+            away_id = e["awayTeam"]["id"]
+
+            p1x, p12, px2 = gerar_probabilidades_real(home_id, away_id)
 
             results.append({
-                "Hora": br_time,
-                "Liga": LEAGUE_NAMES.get(
-                    e["tournament"]["uniqueTournament"]["id"], "Outra"
-                ),
-                "LeagueID": e["tournament"]["uniqueTournament"]["id"],
-                "Jogo": f"{e['homeTeam']['name']} vs {e['awayTeam']['name']}"
+                "Hora": hora,
+                "Liga": LEAGUE_NAMES.get(e["tournament"]["uniqueTournament"]["id"], "Outra"),
+                "Jogo": f"{e['homeTeam']['name']} vs {e['awayTeam']['name']}",
+                "1X": p1x,
+                "12": p12,
+                "X2": px2
             })
 
         except:
             continue
 
     if results:
-        df = pd.DataFrame(results).sort_values(by="Hora")
+        df = pd.DataFrame(results)
 
-        probs = df.apply(gerar_probabilidades, axis=1)
-        df["1X"], df["12"], df["X2"], df["FatorHora"] = zip(*probs)
+        df = aplicar_consenso(df)
+        df = aplicar_greg(df)
 
-        df = aplicar_consenso_inteligente(df)
-        df = aplicar_greg_stats(df)
-
-        st.dataframe(
-            df.drop(columns=["LeagueID", "FatorHora"]),
-            use_container_width=True
-        )
-
+        st.dataframe(df, use_container_width=True)
         st.write(f"Total de jogos avaliados: {len(df)}")
 
     else:
