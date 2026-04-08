@@ -39,7 +39,7 @@ LEAGUE_NAMES = {
 }
 
 # -------------------------
-# API SOFASCORE
+# SOFASCORE
 # -------------------------
 def get_events(date):
     try:
@@ -51,20 +51,44 @@ def get_events(date):
         return []
 
 # -------------------------
-# BETMINES (CORRIGIDO)
+# BETMINES (API + SCRAPING)
 # -------------------------
 def get_betmines_data():
+
+    # -------- TENTA API --------
+    try:
+        url = "https://api.betmines.com/api/v1/predictions/double-chance"
+
+        response = requests.get(url, timeout=10)
+
+        if response.status_code == 200:
+            data = response.json()
+
+            jogos = []
+
+            for item in data:
+                try:
+                    jogos.append({
+                        "Jogo": f"{item['home_team']} vs {item['away_team']}",
+                        "1X": item.get("prob_1x"),
+                        "12": item.get("prob_12"),
+                        "X2": item.get("prob_x2"),
+                    })
+                except:
+                    continue
+
+            if jogos:
+                return pd.DataFrame(jogos)
+
+    except Exception as e:
+        print("API falhou:", e)
+
+    # -------- FALLBACK SCRAPING --------
     try:
         url = "https://betmines.com/pt/palpite-futebol-hoje/dupla-chance"
-        headers = {
-            "User-Agent": "Mozilla/5.0",
-            "Accept-Language": "pt-BR,pt;q=0.9"
-        }
+        headers = {"User-Agent": "Mozilla/5.0"}
 
         response = requests.get(url, headers=headers, timeout=10)
-
-        if response.status_code != 200:
-            return pd.DataFrame(columns=["Jogo", "1X", "12", "X2"])
 
         tables = pd.read_html(response.text)
 
@@ -78,7 +102,6 @@ def get_betmines_data():
         for _, row in df.iterrows():
             try:
                 jogo = str(row.iloc[0])
-
                 valores = []
 
                 for col in row[1:]:
@@ -94,18 +117,17 @@ def get_betmines_data():
                         "X2": valores[2],
                     })
 
-            except Exception as e:
-                print("Erro linha Betmines:", e)
+            except:
                 continue
 
         return pd.DataFrame(jogos)
 
     except Exception as e:
-        print("Erro Betmines:", e)
+        print("Scraping falhou:", e)
         return pd.DataFrame(columns=["Jogo", "1X", "12", "X2"])
 
 # -------------------------
-# MATCH MELHORADO
+# MATCH
 # -------------------------
 def normalize(name):
     name = str(name).lower()
@@ -134,8 +156,7 @@ def merge_data(df_sofa, df_betmines):
 def is_valid_league(event):
     try:
         return event["tournament"]["uniqueTournament"]["id"] in VALID_LEAGUE_IDS
-    except Exception as e:
-        print("Erro liga:", e)
+    except:
         return False
 
 def is_same_day_br(event, selected_date):
@@ -143,14 +164,13 @@ def is_same_day_br(event, selected_date):
         utc = datetime.utcfromtimestamp(event["startTimestamp"]).replace(tzinfo=ZoneInfo("UTC"))
         br_time = utc.astimezone(BR_TZ)
         return br_time.date() == selected_date
-    except Exception as e:
-        print("Erro data:", e)
+    except:
         return False
 
 # -------------------------
 # UI
 # -------------------------
-st.title("⚽ Scanner PRO V6.6 (Probabilidades Betmines)")
+st.title("⚽ Scanner PRO V7 (Auto Betmines + Fallback)")
 
 date = st.date_input("Escolha a data")
 
@@ -180,8 +200,7 @@ if st.button("Analisar Jogos"):
                 "Jogo": f"{e['homeTeam']['name']} vs {e['awayTeam']['name']}"
             })
 
-        except Exception as e:
-            print("Erro jogo:", e)
+        except:
             continue
 
     if results:
@@ -190,7 +209,7 @@ if st.button("Analisar Jogos"):
         df_betmines = get_betmines_data()
 
         if df_betmines.empty:
-            st.warning("⚠️ Betmines não retornou dados.")
+            st.warning("⚠️ Betmines falhou (API + scraping)")
 
         df_final = merge_data(df_sofa, df_betmines)
 
