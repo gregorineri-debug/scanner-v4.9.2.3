@@ -3,6 +3,7 @@ import requests
 from datetime import datetime
 from zoneinfo import ZoneInfo
 import pandas as pd
+import numpy as np
 
 # -------------------------
 # CONFIG
@@ -18,37 +19,25 @@ VALID_LEAGUE_IDS = [
 ]
 
 LEAGUE_NAMES = {
-    325: "Brasileirão", 390: "Série B", 17: "Premier League",
-    18: "Championship", 8: "La Liga", 54: "La Liga 2",
-    35: "Bundesliga", 44: "2. Bundesliga", 23: "Serie A",
-    53: "Serie B Itália", 34: "Ligue 1", 182: "Ligue 2",
-    955: "Saudi Pro League", 155: "Argentina Liga",
-    703: "Primera Nacional", 45: "Áustria", 38: "Bélgica",
-    247: "Bulgária", 172: "Rep. Tcheca", 11653: "Chile",
-    11539: "Colômbia Apertura", 11536: "Colômbia Finalización",
-    170: "Croácia", 39: "Dinamarca", 808: "Egito",
-    36: "Escócia", 242: "MLS", 185: "Grécia",
-    37: "Eredivisie", 131: "Eerste Divisie", 192: "Irlanda",
-    937: "Marrocos", 11621: "Liga MX Apertura",
-    11620: "Liga MX Clausura", 20: "Noruega",
-    11540: "Paraguai Apertura", 11541: "Paraguai Clausura",
-    406: "Peru", 202: "Polônia", 238: "Portugal",
-    239: "Portugal 2", 152: "Romênia", 40: "Suécia",
-    215: "Suíça", 52: "Turquia", 278: "Uruguai"
+    325: "Brasileirão",
+    390: "Série B",
+    17: "Premier League",
+    8: "La Liga",
+    23: "Serie A"
 }
 
 # -------------------------
 # FORÇA DA LIGA
 # -------------------------
 LEAGUE_STRENGTH = {
-    17: 1.0, 8: 1.0, 23: 1.0, 35: 1.0,
-    34: 0.95, 238: 0.9,
-    325: 0.9,
-    955: 0.85,
-    52: 0.85,
-    247: 0.75,
-    808: 0.7,
-    703: 0.7
+    17:1.0, 8:1.0, 23:1.0, 35:1.0,
+    34:0.95, 238:0.9,
+    325:0.9,
+    955:0.85,
+    52:0.85,
+    247:0.75,
+    808:0.7,
+    703:0.7
 }
 
 DEFAULT_LEAGUE_STRENGTH = 0.8
@@ -74,110 +63,133 @@ def is_same_day_br(event, selected_date):
     return utc.astimezone(BR_TZ).date() == selected_date
 
 # -------------------------
-# DADOS DO TIME
+# DADOS COMPLETOS DO TIME
 # -------------------------
-def get_team_data(team_id):
+def get_team_events(team_id, limit=10):
     try:
         data = requests.get(
-            f"https://api.sofascore.com/api/v1/team/{team_id}/events/last/5",
+            f"https://api.sofascore.com/api/v1/team/{team_id}/events/last/{limit}",
             timeout=10
         ).json().get("events", [])
-
-        pts, gm, gs = 0, 0, 0
-
-        for e in data:
-            home = e["homeTeam"]["id"] == team_id
-            hs = e["homeScore"]["current"]
-            as_ = e["awayScore"]["current"]
-
-            if home:
-                gm += hs; gs += as_
-                pts += 3 if hs > as_ else 1 if hs == as_ else 0
-            else:
-                gm += as_; gs += hs
-                pts += 3 if as_ > hs else 1 if as_ == hs else 0
-
-        jogos = len(data) if data else 1
-
-        forma = pts / jogos
-        saldo = (gm - gs) / jogos
-        gols = gm / jogos
-
-        return forma, saldo, gols
-
+        return data
     except:
-        return 1, 0, 1
+        return []
 
 # -------------------------
-# NORMALIZAÇÃO
+# EXTRAÇÃO DE FEATURES
 # -------------------------
-def normalizar(forma, saldo, gols):
+def extrair_features(team_id):
+
+    events = get_team_events(team_id, 10)
+
+    if not events:
+        return 1,0,1,1,1,1
+
+    pontos = []
+    gols_marcados = []
+    gols_sofridos = []
+
+    for e in events:
+        home = e["homeTeam"]["id"] == team_id
+        hs = e["homeScore"]["current"]
+        as_ = e["awayScore"]["current"]
+
+        if home:
+            gm, gs = hs, as_
+        else:
+            gm, gs = as_, hs
+
+        gols_marcados.append(gm)
+        gols_sofridos.append(gs)
+
+        if gm > gs:
+            pontos.append(3)
+        elif gm == gs:
+            pontos.append(1)
+        else:
+            pontos.append(0)
+
+    pontos = np.array(pontos)
+
+    # 🔵 Estrutural
+    forma_base = pontos.mean()
+    saldo = (np.array(gols_marcados) - np.array(gols_sofridos)).mean()
+    defesa = np.mean(gols_sofridos)
+
+    # 🟢 Momento
+    ult3 = pontos[:3].mean() if len(pontos) >= 3 else forma_base
+    momento = (forma_base * 0.6) + (ult3 * 0.4)
+
+    # 🟡 Volatilidade
+    volatilidade = pontos.std()
+
+    ataque = np.mean(gols_marcados)
+
+    return forma_base, saldo, ataque, defesa, momento, volatilidade
+
+# -------------------------
+# SCORE V1
+# -------------------------
+def calcular_score_v1(team_id, league_id, is_home):
+
+    forma, saldo, ataque, defesa, momento, vol = extrair_features(team_id)
+
+    # Normalização
     forma_n = forma / 3
-    saldo_n = max(min(saldo / 3, 1), -1)
-    ataque_n = min(gols / 3, 1)
+    saldo_n = max(min(saldo / 3,1),-1)
+    ataque_n = min(ataque / 3,1)
+    defesa_n = 1 - min(defesa / 3,1)
 
-    return forma_n, saldo_n, ataque_n
+    momento_n = momento / 3
+    vol_penalty = 1 - min(vol / 3, 1)
 
-# -------------------------
-# SCORE
-# -------------------------
-def calcular_score(forma, saldo, gols, league_id):
-    forma_n, saldo_n, ataque_n = normalizar(forma, saldo, gols)
-
-    base_score = (
-        forma_n * 10 +
-        saldo_n * 12 +
-        ataque_n * 5
+    # Estrutural (45%)
+    estrutural = (
+        forma_n * 0.5 +
+        saldo_n * 0.3 +
+        defesa_n * 0.2
     )
 
-    liga_strength = LEAGUE_STRENGTH.get(league_id, DEFAULT_LEAGUE_STRENGTH)
+    # Momento (35%)
+    momento_score = momento_n
 
-    return round(base_score * liga_strength, 2)
+    # Contexto (20%)
+    contexto = vol_penalty
 
-# -------------------------
-# PICK
-# -------------------------
-def definir_pick(diff):
-    if diff >= 3:
-        return "Casa (1) 🔥" if diff >= 5 else "Casa (1)"
-    elif diff <= -5:
-        return "Fora (2) 🔥" if diff <= -7 else "Fora (2)"
+    score = (
+        estrutural * 0.45 +
+        momento_score * 0.35 +
+        contexto * 0.20
+    )
+
+    # Casa/Fora
+    if is_home:
+        score *= 1.10
     else:
-        return "Equilibrado"
+        score *= 0.93
+
+    liga = LEAGUE_STRENGTH.get(league_id, DEFAULT_LEAGUE_STRENGTH)
+
+    return round(score * liga * 100, 2)
 
 # -------------------------
-# FILTRO V16
+# CLASSIFICAÇÃO
 # -------------------------
-def passar_filtros(f_home, s_home, g_home, f_away, s_away, g_away, league_id):
+def classificar(diff, vol_home, vol_away):
 
-    liga_strength = LEAGUE_STRENGTH.get(league_id, DEFAULT_LEAGUE_STRENGTH)
+    risco = max(vol_home, vol_away)
 
-    # 1. Forma mínima
-    if f_home < 1.2 and f_away < 1.2:
-        return False
-
-    # 2. Saldo não negativo (pelo menos um)
-    if s_home < 0 and s_away < 0:
-        return False
-
-    # 3. Diferença de forma
-    if abs(f_home - f_away) < 0.4:
-        return False
-
-    # 4. Liga forte
-    if liga_strength < 0.8:
-        return False
-
-    # 5. Ataque falso
-    if (g_home > 2 and s_home < 0.3) or (g_away > 2 and s_away < 0.3):
-        return False
-
-    return True
+    if abs(diff) >= 15 and risco < 1.2:
+        return "🟢 ELITE"
+    elif abs(diff) >= 8:
+        return "🟡 MÉDIA"
+    else:
+        return "🔴 EVITAR"
 
 # -------------------------
 # UI
 # -------------------------
-st.title("⚽ Scanner PRO V16 (Filtro Anti-Loss Ativado)")
+st.title("⚽ Scanner PRO V1 (Motor Inteligente Multi-Camada)")
 
 date = st.date_input("Escolha a data")
 
@@ -204,23 +216,19 @@ if st.button("Analisar Jogos"):
             home_id = e["homeTeam"]["id"]
             away_id = e["awayTeam"]["id"]
 
-            f_home, s_home, g_home = get_team_data(home_id)
-            f_away, s_away, g_away = get_team_data(away_id)
-
-            # FILTRO V16
-            if not passar_filtros(f_home, s_home, g_home, f_away, s_away, g_away, league_id):
-                continue
-
-            score_home = calcular_score(f_home, s_home, g_home, league_id)
-            score_away = calcular_score(f_away, s_away, g_away, league_id)
+            # Scores
+            score_home = calcular_score_v1(home_id, league_id, True)
+            score_away = calcular_score_v1(away_id, league_id, False)
 
             diff = round(score_home - score_away, 2)
 
-            # FILTRO FINAL DE ENTRADA
-            if not (diff >= 4 or diff <= -5):
-                continue
+            # Volatilidade
+            _, _, _, _, _, vol_home = extrair_features(home_id)
+            _, _, _, _, _, vol_away = extrair_features(away_id)
 
-            pick = definir_pick(diff)
+            nivel = classificar(diff, vol_home, vol_away)
+
+            pick = "Casa" if diff > 0 else "Fora"
 
             results.append({
                 "Hora": hora,
@@ -229,15 +237,16 @@ if st.button("Analisar Jogos"):
                 "Score_Casa": score_home,
                 "Score_Fora": score_away,
                 "Diferença": diff,
-                "Pick": pick
+                "Pick": pick,
+                "Confiança": nivel
             })
 
         except:
             continue
 
     if results:
-        df = pd.DataFrame(results).sort_values(by="Hora")
+        df = pd.DataFrame(results).sort_values(by="Diferença", ascending=False)
         st.dataframe(df, use_container_width=True)
-        st.write(f"Total de jogos filtrados: {len(df)}")
+        st.write(f"Total de jogos analisados: {len(df)}")
     else:
-        st.warning("Nenhum jogo passou nos filtros V16.")
+        st.warning("Nenhum jogo encontrado.")
