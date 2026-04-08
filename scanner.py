@@ -61,91 +61,50 @@ def is_same_day_br(event, selected_date):
     return utc.astimezone(BR_TZ).date() == selected_date
 
 # -------------------------
-# DADOS DO TIME
+# STATS xG + PONTOS
 # -------------------------
-def get_team_events(team_id, limit=10):
+def get_team_season_stats(team_id, tournament_id):
+
     try:
-        data = requests.get(
-            f"https://api.sofascore.com/api/v1/team/{team_id}/events/last/{limit}",
-            timeout=10
-        ).json().get("events", [])
-        return data
+        url = f"https://api.sofascore.com/api/v1/team/{team_id}/unique-tournament/{tournament_id}/season/2023/statistics/overall"
+        data = requests.get(url, timeout=10).json()
+
+        stats = data.get("statistics", {})
+
+        pontos = stats.get("points", 0)
+        xg_for = stats.get("expectedGoals", 0)
+        xg_against = stats.get("expectedGoalsAgainst", 0)
+        jogos = stats.get("matches", 1)
+
+        xg_for_pg = xg_for / jogos
+        xg_against_pg = xg_against / jogos
+
+        return pontos, xg_for_pg, xg_against_pg
+
     except:
-        return []
+        return 0, 0, 0
 
 # -------------------------
-# FEATURES
-# -------------------------
-def extrair_features(team_id):
-
-    events = get_team_events(team_id, 10)
-
-    if not events:
-        return 1,0,1,1,1,1
-
-    pontos = []
-    gols_marcados = []
-    gols_sofridos = []
-
-    for e in events:
-        home = e["homeTeam"]["id"] == team_id
-        hs = e["homeScore"]["current"]
-        as_ = e["awayScore"]["current"]
-
-        if home:
-            gm, gs = hs, as_
-        else:
-            gm, gs = as_, hs
-
-        gols_marcados.append(gm)
-        gols_sofridos.append(gs)
-
-        if gm > gs:
-            pontos.append(3)
-        elif gm == gs:
-            pontos.append(1)
-        else:
-            pontos.append(0)
-
-    pontos = np.array(pontos)
-
-    forma = pontos.mean()
-    saldo = (np.array(gols_marcados) - np.array(gols_sofridos)).mean()
-    defesa = np.mean(gols_sofridos)
-    ataque = np.mean(gols_marcados)
-    volatilidade = pontos.std()
-
-    return forma, saldo, ataque, defesa, 0, volatilidade
-
-# -------------------------
-# NOVO MOTOR SIMPLES
+# SCORE PRINCIPAL (NOVO MOTOR)
 # -------------------------
 def calcular_score_simples(team_id, league_id, is_home):
 
-    forma, saldo, ataque, defesa, _, vol = extrair_features(team_id)
+    pontos, xg_for, xg_against = get_team_season_stats(team_id, league_id)
 
-    forma_n = forma / 3
-    saldo_n = max(min(saldo / 3,1),-1)
-    defesa_n = 1 - min(defesa / 3,1)
-
-    # AJUSTE AUTOMÁTICO DE PESO
-    if abs(forma - 1.5) < 0.3:
-        peso_forma = 4
-        peso_saldo = 3
-        peso_defesa = 7
-    else:
-        peso_forma = 6
-        peso_saldo = 4
-        peso_defesa = 6
+    # normalizações
+    pontos_n = pontos / 100
+    ataque_n = min(xg_for / 2.5, 1)
+    defesa_n = 1 - min(xg_against / 2.5, 1)
 
     score = (
-        forma_n * peso_forma +
-        saldo_n * peso_saldo +
-        defesa_n * peso_defesa
+        pontos_n * 6 +
+        ataque_n * 4 +
+        defesa_n * 5
     )
 
+    # fator casa/fora
     if is_home:
-        score *= 1.08
+        score *= 1.07
     else:
         score *= 0.95
 
@@ -168,7 +127,7 @@ def classificar(diff, vol_home, vol_away):
         return "🔴 SKIP"
 
 # -------------------------
-# CONSENSO PRO
+# CONSENSO PRO (mantido)
 # -------------------------
 def get_consenso_pro(home, away):
     casa = random.randint(40, 80)
@@ -194,7 +153,7 @@ def validar_consenso(pick, casa, fora):
 # -------------------------
 # UI
 # -------------------------
-st.title("⚽ Scanner PRO V1 (Motor Simples Inteligente + Consenso PRO)")
+st.title("⚽ Scanner PRO V1 (Motor xG + Pontos + Consenso PRO)")
 
 date = st.date_input("Escolha a data")
 
@@ -226,12 +185,12 @@ if st.button("Analisar Jogos"):
 
             diff = round(score_home - score_away, 2)
 
-            _, _, _, _, _, vol_home = extrair_features(home_id)
-            _, _, _, _, _, vol_away = extrair_features(away_id)
+            # volatilidade removida (mantido compatibilidade)
+            vol_home = 0
+            vol_away = 0
 
             nivel = classificar(diff, vol_home, vol_away)
 
-            # SKIP automático
             if nivel == "🔴 SKIP":
                 continue
 
