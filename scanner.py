@@ -44,12 +44,14 @@ LEAGUE_NAMES = {
 def get_events(date):
     try:
         url = f"https://api.sofascore.com/api/v1/sport/football/scheduled-events/{date}"
-        return requests.get(url, timeout=10).json().get("events", [])
-    except:
+        response = requests.get(url, timeout=10)
+        return response.json().get("events", [])
+    except Exception as e:
+        print("Erro SofaScore:", e)
         return []
 
 # -------------------------
-# BETMINES (PEGANDO SÓ PROB %)
+# BETMINES (CORRIGIDO)
 # -------------------------
 def get_betmines_data():
     try:
@@ -64,7 +66,6 @@ def get_betmines_data():
         if response.status_code != 200:
             return pd.DataFrame(columns=["Jogo", "1X", "12", "X2"])
 
-        # pega TODAS as tabelas
         tables = pd.read_html(response.text)
 
         if not tables:
@@ -78,33 +79,41 @@ def get_betmines_data():
             try:
                 jogo = str(row.iloc[0])
 
-                # pega todos números da linha
-                nums = re.findall(r'\d+', str(row))
+                valores = []
 
-                # precisa ter pelo menos 3 números
-                if len(nums) >= 3:
+                for col in row[1:]:
+                    match = re.search(r'(\d+)%', str(col))
+                    if match:
+                        valores.append(match.group(1))
+
+                if len(valores) >= 3:
                     jogos.append({
                         "Jogo": jogo,
-                        "1X": nums[-3],
-                        "12": nums[-2],
-                        "X2": nums[-1],
+                        "1X": valores[0],
+                        "12": valores[1],
+                        "X2": valores[2],
                     })
 
-            except:
+            except Exception as e:
+                print("Erro linha Betmines:", e)
                 continue
 
         return pd.DataFrame(jogos)
 
-    except:
+    except Exception as e:
+        print("Erro Betmines:", e)
         return pd.DataFrame(columns=["Jogo", "1X", "12", "X2"])
 
 # -------------------------
-# MATCH
+# MATCH MELHORADO
 # -------------------------
-def merge_data(df_sofa, df_betmines):
+def normalize(name):
+    name = str(name).lower()
+    name = re.sub(r'[^a-z0-9 ]', '', name)
+    name = name.replace(" vs ", " ")
+    return name.strip()
 
-    def normalize(name):
-        return str(name).lower().replace(" vs ", " ").strip()
+def merge_data(df_sofa, df_betmines):
 
     if df_betmines.empty:
         df_sofa["1X"] = None
@@ -125,13 +134,18 @@ def merge_data(df_sofa, df_betmines):
 def is_valid_league(event):
     try:
         return event["tournament"]["uniqueTournament"]["id"] in VALID_LEAGUE_IDS
-    except:
+    except Exception as e:
+        print("Erro liga:", e)
         return False
 
 def is_same_day_br(event, selected_date):
-    utc = datetime.utcfromtimestamp(event["startTimestamp"]).replace(tzinfo=ZoneInfo("UTC"))
-    br_time = utc.astimezone(BR_TZ)
-    return br_time.date() == selected_date
+    try:
+        utc = datetime.utcfromtimestamp(event["startTimestamp"]).replace(tzinfo=ZoneInfo("UTC"))
+        br_time = utc.astimezone(BR_TZ)
+        return br_time.date() == selected_date
+    except Exception as e:
+        print("Erro data:", e)
+        return False
 
 # -------------------------
 # UI
@@ -166,7 +180,8 @@ if st.button("Analisar Jogos"):
                 "Jogo": f"{e['homeTeam']['name']} vs {e['awayTeam']['name']}"
             })
 
-        except:
+        except Exception as e:
+            print("Erro jogo:", e)
             continue
 
     if results:
