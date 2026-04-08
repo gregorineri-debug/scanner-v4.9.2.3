@@ -48,7 +48,7 @@ def get_events(date):
         return []
 
 # -------------------------
-# ÚLTIMOS JOGOS (FORMA + GOLS)
+# ÚLTIMOS JOGOS
 # -------------------------
 def get_team_last_matches(team_id):
     try:
@@ -61,57 +61,40 @@ def get_team_last_matches(team_id):
 
         for e in data:
             home = e["homeTeam"]["id"] == team_id
-            home_score = e["homeScore"]["current"]
-            away_score = e["awayScore"]["current"]
+            hs = e["homeScore"]["current"]
+            as_ = e["awayScore"]["current"]
 
             if home:
-                gols_marcados += home_score
-                gols_sofridos += away_score
-                if home_score > away_score:
-                    pontos += 3
-                elif home_score == away_score:
-                    pontos += 1
+                gols_marcados += hs
+                gols_sofridos += as_
+                pontos += 3 if hs > as_ else 1 if hs == as_ else 0
             else:
-                gols_marcados += away_score
-                gols_sofridos += home_score
-                if away_score > home_score:
-                    pontos += 3
-                elif away_score == home_score:
-                    pontos += 1
+                gols_marcados += as_
+                gols_sofridos += hs
+                pontos += 3 if as_ > hs else 1 if as_ == hs else 0
 
         jogos = len(data)
-
         if jogos == 0:
-            return 1, 1, 1
+            return 1,1,1
 
-        return (
-            pontos / jogos,                 # forma
-            gols_marcados / jogos,          # ataque
-            gols_sofridos / jogos           # defesa
-        )
+        return pontos/jogos, gols_marcados/jogos, gols_sofridos/jogos
 
     except:
-        return 1, 1, 1
+        return 1,1,1
 
 # -------------------------
-# FORÇA DO TIME (AVANÇADA)
+# FORÇA
 # -------------------------
 def get_team_strength(team_id):
-
     forma, ataque, defesa = get_team_last_matches(team_id)
+    xg = ataque - defesa
 
-    # proxy de xG (ataque vs defesa)
-    xg_proxy = ataque - defesa
-
-    # score final
-    strength = (
-        forma * 10 +         # peso forma
-        ataque * 5 +         # ofensivo
-        (2 - defesa) * 5 +   # defensivo invertido
-        xg_proxy * 5         # intensidade
+    return (
+        forma * 10 +
+        ataque * 5 +
+        (2 - defesa) * 5 +
+        xg * 5
     )
-
-    return strength
 
 # -------------------------
 # PROBABILIDADES
@@ -123,11 +106,8 @@ def gerar_probabilidades(home_id, away_id):
 
     diff = home - away
 
-    prob_home = 50 + diff * 1.2
-    prob_away = 50 - diff * 1.2
-
-    prob_home = max(min(prob_home, 85), 35)
-    prob_away = max(min(prob_away, 85), 35)
+    prob_home = max(min(50 + diff * 1.2, 85), 35)
+    prob_away = max(min(50 - diff * 1.2, 85), 35)
 
     prob_1x = round(min(prob_home + 10, 95))
     prob_x2 = round(min(prob_away + 10, 95))
@@ -136,26 +116,24 @@ def gerar_probabilidades(home_id, away_id):
     return prob_1x, prob_12, prob_x2
 
 # -------------------------
-# CONSENSO
+# CONSENSO (CORRIGIDO)
 # -------------------------
 def aplicar_consenso(df):
 
     df["Score_Consenso"] = (
         (df["1X"] + df["12"] + df["X2"]) / 3
-    )
+    ).astype(int)
 
     return df.sort_values(by="Score_Consenso", ascending=False)
 
 # -------------------------
-# GREG STATS
+# GREG
 # -------------------------
 def aplicar_greg(df):
-
     df["Pick_Vencedor"] = df.apply(
         lambda x: "Casa (1)" if x["1X"] > x["X2"] else "Fora (2)",
         axis=1
     )
-
     return df
 
 # -------------------------
