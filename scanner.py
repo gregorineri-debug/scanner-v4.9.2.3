@@ -84,43 +84,57 @@ def get_team_data(team_id):
 
         jogos = len(data) if data else 1
 
-        forma = pts / jogos
-        saldo = (gm - gs) / jogos
+        forma = pts / jogos              # 0–3
+        saldo = (gm - gs) / jogos        # ~ -3 a +3
+        gols = gm / jogos                # ~ 0–3
 
-        posse = gm * 8
-        xg = gm - (gs * 0.7)
-
-        return forma, saldo, posse, xg
+        return forma, saldo, gols
 
     except:
-        return 1, 0, 5, 0
+        return 1, 0, 1
 
 # -------------------------
-# SCORE COMPLETO
+# NORMALIZAÇÃO
+# -------------------------
+def normalizar(forma, saldo, gols):
+
+    forma_n = forma / 3                        # 0–1
+    saldo_n = max(min(saldo / 3, 1), -1)       # -1 a 1
+    ataque_n = min(gols / 3, 1)                # 0–1
+
+    # proxies mais controlados
+    posse_n = ataque_n                         # proxy leve
+    xg_n = ataque_n                            # proxy leve
+
+    return forma_n, saldo_n, posse_n, xg_n
+
+# -------------------------
+# SCORE FINAL
 # -------------------------
 def calcular_score(team_id):
 
-    forma, saldo, posse, xg = get_team_data(team_id)
+    forma, saldo, gols = get_team_data(team_id)
+    forma_n, saldo_n, posse_n, xg_n = normalizar(forma, saldo, gols)
 
     score = (
-        forma * 8 +
-        saldo * 8 +
-        posse * 0.9 +
-        xg * 10
+        forma_n * 8 +
+        saldo_n * 8 +
+        posse_n * 9 +
+        xg_n * 10
     )
 
     return round(score, 2)
 
 # -------------------------
-# PICK FINAL
+# PICK
 # -------------------------
 def definir_pick(home_score, away_score):
 
     diff = home_score - away_score
 
-    if diff >= 8:
+    if diff >= 4:
         return "Casa (1)"
-    elif diff <= -8:
+    elif diff <= -4:
         return "Fora (2)"
     else:
         return "Equilibrado"
@@ -128,7 +142,7 @@ def definir_pick(home_score, away_score):
 # -------------------------
 # UI
 # -------------------------
-st.title("⚽ Scanner PRO V13 (Score Profissional)")
+st.title("⚽ Scanner PRO V14 (Normalização Profissional)")
 
 date = st.date_input("Escolha a data")
 
