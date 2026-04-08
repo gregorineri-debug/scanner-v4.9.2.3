@@ -48,88 +48,114 @@ def get_events(date):
         return []
 
 # -------------------------
-# PEGAR DADOS DO TIME
+# ÚLTIMOS JOGOS (FORMA + GOLS)
 # -------------------------
-def get_team_strength(team_id):
+def get_team_last_matches(team_id):
     try:
-        url = f"https://api.sofascore.com/api/v1/team/{team_id}/unique-tournament/last/standings"
-        data = requests.get(url, timeout=10).json()
+        url = f"https://api.sofascore.com/api/v1/team/{team_id}/events/last/5"
+        data = requests.get(url, timeout=10).json()["events"]
 
-        team = data["standings"][0]["rows"]
+        pontos = 0
+        gols_marcados = 0
+        gols_sofridos = 0
 
-        for t in team:
-            if t["team"]["id"] == team_id:
-                position = t["position"]
-                points = t["points"]
+        for e in data:
+            home = e["homeTeam"]["id"] == team_id
+            home_score = e["homeScore"]["current"]
+            away_score = e["awayScore"]["current"]
 
-                # score simples
-                strength = (100 - position) + (points * 0.5)
-                return strength
+            if home:
+                gols_marcados += home_score
+                gols_sofridos += away_score
+                if home_score > away_score:
+                    pontos += 3
+                elif home_score == away_score:
+                    pontos += 1
+            else:
+                gols_marcados += away_score
+                gols_sofridos += home_score
+                if away_score > home_score:
+                    pontos += 3
+                elif away_score == home_score:
+                    pontos += 1
+
+        jogos = len(data)
+
+        if jogos == 0:
+            return 1, 1, 1
+
+        return (
+            pontos / jogos,                 # forma
+            gols_marcados / jogos,          # ataque
+            gols_sofridos / jogos           # defesa
+        )
 
     except:
-        return 50  # fallback
-
-    return 50
+        return 1, 1, 1
 
 # -------------------------
-# GERAR PROBABILIDADES REAIS
+# FORÇA DO TIME (AVANÇADA)
 # -------------------------
-def gerar_probabilidades_real(home_id, away_id):
+def get_team_strength(team_id):
 
-    home_strength = get_team_strength(home_id)
-    away_strength = get_team_strength(away_id)
+    forma, ataque, defesa = get_team_last_matches(team_id)
 
-    diff = home_strength - away_strength
+    # proxy de xG (ataque vs defesa)
+    xg_proxy = ataque - defesa
 
-    # normaliza diferença
-    prob_home = 50 + diff * 0.5
-    prob_away = 50 - diff * 0.5
+    # score final
+    strength = (
+        forma * 10 +         # peso forma
+        ataque * 5 +         # ofensivo
+        (2 - defesa) * 5 +   # defensivo invertido
+        xg_proxy * 5         # intensidade
+    )
 
-    # limites
-    prob_home = max(min(prob_home, 85), 40)
-    prob_away = max(min(prob_away, 85), 40)
+    return strength
 
-    # mercados
-    prob_1x = round(min(prob_home + 15, 95))
-    prob_x2 = round(min(prob_away + 15, 95))
+# -------------------------
+# PROBABILIDADES
+# -------------------------
+def gerar_probabilidades(home_id, away_id):
+
+    home = get_team_strength(home_id)
+    away = get_team_strength(away_id)
+
+    diff = home - away
+
+    prob_home = 50 + diff * 1.2
+    prob_away = 50 - diff * 1.2
+
+    prob_home = max(min(prob_home, 85), 35)
+    prob_away = max(min(prob_away, 85), 35)
+
+    prob_1x = round(min(prob_home + 10, 95))
+    prob_x2 = round(min(prob_away + 10, 95))
     prob_12 = round((prob_home + prob_away) / 2)
 
     return prob_1x, prob_12, prob_x2
 
 # -------------------------
-# CONSENSO INTELIGENTE
+# CONSENSO
 # -------------------------
 def aplicar_consenso(df):
 
-    scores = []
+    df["Score_Consenso"] = (
+        (df["1X"] + df["12"] + df["X2"]) / 3
+    )
 
-    for _, row in df.iterrows():
-
-        media = (row["1X"] + row["12"] + row["X2"]) / 3
-        equilibrio = 100 - abs(row["1X"] - row["X2"])
-
-        score = (media * 0.7) + (equilibrio * 0.3)
-
-        scores.append(round(score, 2))
-
-    df["Score_Consenso"] = scores
     return df.sort_values(by="Score_Consenso", ascending=False)
 
 # -------------------------
-# GREG STATS X V4.5 (REAL)
+# GREG STATS
 # -------------------------
 def aplicar_greg(df):
 
-    picks = []
+    df["Pick_Vencedor"] = df.apply(
+        lambda x: "Casa (1)" if x["1X"] > x["X2"] else "Fora (2)",
+        axis=1
+    )
 
-    for _, row in df.iterrows():
-
-        if row["1X"] > row["X2"]:
-            picks.append("Casa (1)")
-        else:
-            picks.append("Fora (2)")
-
-    df["Pick_Vencedor"] = picks
     return df
 
 # -------------------------
@@ -151,7 +177,7 @@ def is_same_day_br(event, selected_date):
 # -------------------------
 # UI
 # -------------------------
-st.title("⚽ Scanner PRO V9 (Modelo Real + Greg Stats V4.5)")
+st.title("⚽ Scanner PRO V10 (Modelo Avançado Real)")
 
 date = st.date_input("Escolha a data")
 
@@ -176,7 +202,7 @@ if st.button("Analisar Jogos"):
             home_id = e["homeTeam"]["id"]
             away_id = e["awayTeam"]["id"]
 
-            p1x, p12, px2 = gerar_probabilidades_real(home_id, away_id)
+            p1x, p12, px2 = gerar_probabilidades(home_id, away_id)
 
             results.append({
                 "Hora": hora,
