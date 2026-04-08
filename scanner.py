@@ -41,7 +41,7 @@ LEAGUE_NAMES = {
 # FORÇA DA LIGA (ANTI-ZEBRA)
 # -------------------------
 LEAGUE_STRENGTH = {
-    17: 1.0, 8: 1.0, 23: 1.0, 35: 1.0,   # top ligas
+    17: 1.0, 8: 1.0, 23: 1.0, 35: 1.0,
     34: 0.95, 238: 0.9,
     325: 0.9,
     955: 0.85,
@@ -51,7 +51,6 @@ LEAGUE_STRENGTH = {
     703: 0.7
 }
 
-# default
 DEFAULT_LEAGUE_STRENGTH = 0.8
 
 # -------------------------
@@ -78,7 +77,6 @@ def is_same_day_br(event, selected_date):
 # DADOS DO TIME
 # -------------------------
 def get_team_data(team_id):
-
     try:
         data = requests.get(
             f"https://api.sofascore.com/api/v1/team/{team_id}/events/last/5",
@@ -114,7 +112,6 @@ def get_team_data(team_id):
 # NORMALIZAÇÃO
 # -------------------------
 def normalizar(forma, saldo, gols):
-
     forma_n = forma / 3
     saldo_n = max(min(saldo / 3, 1), -1)
     ataque_n = min(gols / 3, 1)
@@ -125,7 +122,6 @@ def normalizar(forma, saldo, gols):
 # SCORE COM LIGA
 # -------------------------
 def calcular_score(team_id, league_id):
-
     forma, saldo, gols = get_team_data(team_id)
     forma_n, saldo_n, ataque_n = normalizar(forma, saldo, gols)
 
@@ -142,14 +138,19 @@ def calcular_score(team_id, league_id):
     return round(final_score, 2)
 
 # -------------------------
-# PICK
+# PICK (AJUSTADO)
 # -------------------------
 def definir_pick(diff):
 
-    if diff > 0:
+    # CASA → diferença >= 3
+    if diff >= 3:
         return "Casa (1) 🔥" if diff >= 5 else "Casa (1)"
-    elif diff < 0:
-        return "Fora (2) 🔥" if diff <= -5 else "Fora (2)"
+
+    # FORA → diferença <= -5
+    elif diff <= -5:
+        return "Fora (2) 🔥" if diff <= -7 else "Fora (2)"
+
+    # RESTO → neutro
     else:
         return "Equilibrado"
 
