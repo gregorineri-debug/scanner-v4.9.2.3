@@ -55,11 +55,10 @@ def is_valid_league(event):
 
 def is_same_day_br(event, selected_date):
     utc = datetime.utcfromtimestamp(event["startTimestamp"]).replace(tzinfo=ZoneInfo("UTC"))
-    br_time = utc.astimezone(BR_TZ)
-    return br_time.date() == selected_date
+    return utc.astimezone(BR_TZ).date() == selected_date
 
 # -------------------------
-# DADOS DO TIME (REAL + PROXY)
+# DADOS DO TIME
 # -------------------------
 def get_team_data(team_id):
 
@@ -88,7 +87,6 @@ def get_team_data(team_id):
         forma = pts / jogos
         saldo = (gm - gs) / jogos
 
-        # proxies realistas
         posse = gm * 8
         xg = gm - (gs * 0.7)
 
@@ -98,73 +96,39 @@ def get_team_data(team_id):
         return 1, 0, 5, 0
 
 # -------------------------
-# FORÇA MULTI-FATOR
+# SCORE COMPLETO
 # -------------------------
-def calcular_forca(team_id):
+def calcular_score(team_id):
 
     forma, saldo, posse, xg = get_team_data(team_id)
 
     score = (
-        forma * 8 +       # forma
-        saldo * 8 +       # saldo
-        posse * 0.8 +     # posse
-        xg * 10           # xG
+        forma * 8 +
+        saldo * 8 +
+        posse * 0.9 +
+        xg * 10
     )
 
-    return score
+    return round(score, 2)
 
 # -------------------------
-# PROBABILIDADE
+# PICK FINAL
 # -------------------------
-def gerar_probabilidades(home_id, away_id):
+def definir_pick(home_score, away_score):
 
-    home = calcular_forca(home_id)
-    away = calcular_forca(away_id)
+    diff = home_score - away_score
 
-    diff = home - away
-
-    prob_home = 50 + diff * 4
-    prob_away = 50 - diff * 4
-
-    prob_home = max(min(prob_home, 90), 20)
-    prob_away = max(min(prob_away, 90), 20)
-
-    p1x = round(prob_home + 5)
-    px2 = round(prob_away + 5)
-    p12 = round(100 - abs(prob_home - prob_away))
-
-    return p1x, p12, px2
+    if diff >= 8:
+        return "Casa (1)"
+    elif diff <= -8:
+        return "Fora (2)"
+    else:
+        return "Equilibrado"
 
 # -------------------------
-# CONSENSO PRO
+# UI
 # -------------------------
-def aplicar_consenso(df):
-
-    df["Score_Consenso"] = (
-        df[["1X","12","X2"]].max(axis=1) * 0.7 +
-        abs(df["1X"] - df["X2"]) * 0.3
-    ).astype(int)
-
-    return df.sort_values(by="Score_Consenso", ascending=False)
-
-# -------------------------
-# GREG STATS
-# -------------------------
-def aplicar_greg(df):
-
-    df["Pick_Vencedor"] = df.apply(
-        lambda x: "Casa (1)" if x["1X"] - x["X2"] > 10
-        else "Fora (2)" if x["X2"] - x["1X"] > 10
-        else "Equilibrado",
-        axis=1
-    )
-
-    return df
-
-# -------------------------
-# UI (INALTERADA)
-# -------------------------
-st.title("⚽ Scanner PRO V13 (Motor Profissional)")
+st.title("⚽ Scanner PRO V13 (Score Profissional)")
 
 date = st.date_input("Escolha a data")
 
@@ -184,22 +148,26 @@ if st.button("Analisar Jogos"):
     for e in filtered_events:
         try:
             utc = datetime.utcfromtimestamp(e["startTimestamp"]).replace(tzinfo=ZoneInfo("UTC"))
-            br_time = utc.astimezone(BR_TZ).strftime("%H:%M")
+            hora = utc.astimezone(BR_TZ).strftime("%H:%M")
 
             home_id = e["homeTeam"]["id"]
             away_id = e["awayTeam"]["id"]
 
-            p1x, p12, px2 = gerar_probabilidades(home_id, away_id)
+            score_home = calcular_score(home_id)
+            score_away = calcular_score(away_id)
+
+            pick = definir_pick(score_home, score_away)
 
             results.append({
-                "Hora": br_time,
+                "Hora": hora,
                 "Liga": LEAGUE_NAMES.get(
                     e["tournament"]["uniqueTournament"]["id"], "Outra"
                 ),
                 "Jogo": f"{e['homeTeam']['name']} vs {e['awayTeam']['name']}",
-                "1X": p1x,
-                "12": p12,
-                "X2": px2
+                "Score_Casa": score_home,
+                "Score_Fora": score_away,
+                "Diferença": round(score_home - score_away, 2),
+                "Pick": pick
             })
 
         except:
@@ -207,12 +175,7 @@ if st.button("Analisar Jogos"):
 
     if results:
         df = pd.DataFrame(results).sort_values(by="Hora")
-
-        df = aplicar_consenso(df)
-        df = aplicar_greg(df)
-
         st.dataframe(df, use_container_width=True)
         st.write(f"Total de jogos: {len(df)}")
-
     else:
         st.warning("Nenhum jogo encontrado.")
