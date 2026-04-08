@@ -3,7 +3,6 @@ import requests
 from datetime import datetime
 from zoneinfo import ZoneInfo
 import pandas as pd
-import re
 import random
 
 # -------------------------
@@ -47,15 +46,14 @@ def get_events(date):
         url = f"https://api.sofascore.com/api/v1/sport/football/scheduled-events/{date}"
         response = requests.get(url, timeout=10)
         return response.json().get("events", [])
-    except Exception as e:
-        print("Erro SofaScore:", e)
+    except:
         return []
 
 # -------------------------
-# MODELO PRÓPRIO (V7)
+# MODELO BASE
 # -------------------------
 def league_strength(league_id):
-    fortes = [17, 8, 23, 35, 34]  # top ligas
+    fortes = [17, 8, 23, 35, 34]
     medias = [390, 18, 44, 53, 182]
 
     if league_id in fortes:
@@ -68,15 +66,9 @@ def league_strength(league_id):
 def gerar_probabilidades(row):
     base = league_strength(row["LeagueID"])
 
-    # fator horário (jogos muito cedo/tarde são mais instáveis)
     hora = int(row["Hora"].split(":")[0])
+    fator_hora = 1.0 if 12 <= hora <= 20 else 0.9
 
-    if 12 <= hora <= 20:
-        fator_hora = 1.0
-    else:
-        fator_hora = 0.9
-
-    # pequena variação aleatória controlada
     variacao = random.uniform(-0.05, 0.05)
 
     prob_base = base * fator_hora + variacao
@@ -86,6 +78,34 @@ def gerar_probabilidades(row):
     prob_x2 = round(min(max((prob_base - 0.08) * 100, 45), 80))
 
     return prob_1x, prob_12, prob_x2
+
+# -------------------------
+# CONSENSO PRO (FILTRO)
+# -------------------------
+def aplicar_consenso(df):
+    df["Score_Consenso"] = (df["1X"] + df["12"] + df["X2"]) / 3
+    return df[df["Score_Consenso"] >= 65]
+
+# -------------------------
+# GREG STATS X V4.5
+# -------------------------
+def aplicar_greg_stats(df):
+
+    picks = []
+
+    for _, row in df.iterrows():
+
+        # lógica de vencedor baseada em força relativa
+        if row["1X"] >= row["X2"]:
+            pick = "Casa (1)"
+        else:
+            pick = "Fora (2)"
+
+        picks.append(pick)
+
+    df["Pick_Vencedor"] = picks
+
+    return df
 
 # -------------------------
 # FILTROS
@@ -107,7 +127,7 @@ def is_same_day_br(event, selected_date):
 # -------------------------
 # UI
 # -------------------------
-st.title("⚽ Scanner PRO V7 (Modelo Próprio)")
+st.title("⚽ Scanner PRO V7 (Consenso PRO + Greg Stats V4.5)")
 
 date = st.date_input("Escolha a data")
 
@@ -144,12 +164,18 @@ if st.button("Analisar Jogos"):
     if results:
         df = pd.DataFrame(results).sort_values(by="Hora")
 
-        # gerar probabilidades
+        # probabilidades
         probs = df.apply(gerar_probabilidades, axis=1)
         df["1X"], df["12"], df["X2"] = zip(*probs)
 
+        # aplica CONSENSO PRO
+        df = aplicar_consenso(df)
+
+        # aplica GREG STATS
+        df = aplicar_greg_stats(df)
+
         st.dataframe(df.drop(columns=["LeagueID"]), use_container_width=True)
-        st.write(f"Total de jogos: {len(df)}")
+        st.write(f"Jogos filtrados: {len(df)}")
 
     else:
         st.warning("Nenhum jogo encontrado.")
