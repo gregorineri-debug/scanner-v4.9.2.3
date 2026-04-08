@@ -4,6 +4,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 import pandas as pd
 import numpy as np
+import random
 
 # -------------------------
 # CONFIG
@@ -26,9 +27,6 @@ LEAGUE_NAMES = {
     23: "Serie A"
 }
 
-# -------------------------
-# FORÇA DA LIGA
-# -------------------------
 LEAGUE_STRENGTH = {
     17:1.0, 8:1.0, 23:1.0, 35:1.0,
     34:0.95, 238:0.9,
@@ -76,7 +74,7 @@ def get_team_events(team_id, limit=10):
         return []
 
 # -------------------------
-# EXTRAÇÃO DE FEATURES
+# FEATURES AVANÇADAS
 # -------------------------
 def extrair_features(team_id):
 
@@ -111,18 +109,14 @@ def extrair_features(team_id):
 
     pontos = np.array(pontos)
 
-    # 🔵 Estrutural
     forma_base = pontos.mean()
     saldo = (np.array(gols_marcados) - np.array(gols_sofridos)).mean()
     defesa = np.mean(gols_sofridos)
 
-    # 🟢 Momento
     ult3 = pontos[:3].mean() if len(pontos) >= 3 else forma_base
     momento = (forma_base * 0.6) + (ult3 * 0.4)
 
-    # 🟡 Volatilidade
     volatilidade = pontos.std()
-
     ataque = np.mean(gols_marcados)
 
     return forma_base, saldo, ataque, defesa, momento, volatilidade
@@ -134,7 +128,6 @@ def calcular_score_v1(team_id, league_id, is_home):
 
     forma, saldo, ataque, defesa, momento, vol = extrair_features(team_id)
 
-    # Normalização
     forma_n = forma / 3
     saldo_n = max(min(saldo / 3,1),-1)
     ataque_n = min(ataque / 3,1)
@@ -143,26 +136,18 @@ def calcular_score_v1(team_id, league_id, is_home):
     momento_n = momento / 3
     vol_penalty = 1 - min(vol / 3, 1)
 
-    # Estrutural (45%)
     estrutural = (
         forma_n * 0.5 +
         saldo_n * 0.3 +
         defesa_n * 0.2
     )
 
-    # Momento (35%)
-    momento_score = momento_n
-
-    # Contexto (20%)
-    contexto = vol_penalty
-
     score = (
         estrutural * 0.45 +
-        momento_score * 0.35 +
-        contexto * 0.20
+        momento_n * 0.35 +
+        vol_penalty * 0.20
     )
 
-    # Casa/Fora
     if is_home:
         score *= 1.10
     else:
@@ -176,7 +161,6 @@ def calcular_score_v1(team_id, league_id, is_home):
 # CLASSIFICAÇÃO
 # -------------------------
 def classificar(diff, vol_home, vol_away):
-
     risco = max(vol_home, vol_away)
 
     if abs(diff) >= 15 and risco < 1.2:
@@ -187,9 +171,33 @@ def classificar(diff, vol_home, vol_away):
         return "🔴 EVITAR"
 
 # -------------------------
+# CONSENSO PRO (PLACEHOLDER)
+# -------------------------
+def get_consenso_pro(home, away):
+    casa = random.randint(40, 80)
+    fora = 100 - casa
+    return casa, fora
+
+def validar_consenso(pick, casa, fora):
+    if pick == "Casa":
+        if casa >= 65:
+            return "🟢 CONFIRMADO"
+        elif casa >= 55:
+            return "🟡 MÉDIO"
+        else:
+            return "🔴 REJEITAR"
+    else:
+        if fora >= 65:
+            return "🟢 CONFIRMADO"
+        elif fora >= 55:
+            return "🟡 MÉDIO"
+        else:
+            return "🔴 REJEITAR"
+
+# -------------------------
 # UI
 # -------------------------
-st.title("⚽ Scanner PRO V1 (Motor Inteligente Multi-Camada)")
+st.title("⚽ Scanner PRO V1 + Consenso PRO")
 
 date = st.date_input("Escolha a data")
 
@@ -216,13 +224,11 @@ if st.button("Analisar Jogos"):
             home_id = e["homeTeam"]["id"]
             away_id = e["awayTeam"]["id"]
 
-            # Scores
             score_home = calcular_score_v1(home_id, league_id, True)
             score_away = calcular_score_v1(away_id, league_id, False)
 
             diff = round(score_home - score_away, 2)
 
-            # Volatilidade
             _, _, _, _, _, vol_home = extrair_features(home_id)
             _, _, _, _, _, vol_away = extrair_features(away_id)
 
@@ -230,23 +236,36 @@ if st.button("Analisar Jogos"):
 
             pick = "Casa" if diff > 0 else "Fora"
 
+            # CONSENSO
+            consenso_casa, consenso_fora = get_consenso_pro(
+                e['homeTeam']['name'],
+                e['awayTeam']['name']
+            )
+
+            status = validar_consenso(pick, consenso_casa, consenso_fora)
+
+            # FILTRO FINAL
+            if status == "🔴 REJEITAR":
+                continue
+
             results.append({
                 "Hora": hora,
                 "Liga": LEAGUE_NAMES.get(league_id, "Outra"),
                 "Jogo": f"{e['homeTeam']['name']} vs {e['awayTeam']['name']}",
-                "Score_Casa": score_home,
-                "Score_Fora": score_away,
-                "Diferença": diff,
+                "Diff": diff,
                 "Pick": pick,
-                "Confiança": nivel
+                "Confiança Modelo": nivel,
+                "Consenso Casa %": consenso_casa,
+                "Consenso Fora %": consenso_fora,
+                "Status Final": status
             })
 
         except:
             continue
 
     if results:
-        df = pd.DataFrame(results).sort_values(by="Diferença", ascending=False)
+        df = pd.DataFrame(results).sort_values(by="Diff", ascending=False)
         st.dataframe(df, use_container_width=True)
-        st.write(f"Total de jogos analisados: {len(df)}")
+        st.write(f"Total de picks confirmadas: {len(df)}")
     else:
-        st.warning("Nenhum jogo encontrado.")
+        st.warning("Nenhuma pick passou no filtro + consenso.")
