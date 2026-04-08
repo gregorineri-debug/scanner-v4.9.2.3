@@ -14,15 +14,13 @@ VALID_LEAGUE_IDS = [
     238,239,152,40,215,52,278
 ]
 
+LEAGUE_NAMES = {325:"Brasileirão",390:"Série B",17:"Premier League",8:"La Liga",23:"Serie A"}
+
 LEAGUE_STRENGTH = {
-    17: 1.0, 8: 1.0, 23: 1.0, 35: 1.0,
-    34: 0.95, 238: 0.9,
-    325: 0.9,
-    955: 0.85,
-    52: 0.85,
-    247: 0.75,
-    808: 0.7,
-    703: 0.7
+    17:1.0,8:1.0,23:1.0,35:1.0,
+    34:0.95,238:0.9,325:0.9,
+    955:0.85,52:0.85,
+    247:0.75,808:0.7,703:0.7
 }
 
 DEFAULT_LEAGUE_STRENGTH = 0.8
@@ -39,7 +37,7 @@ def get_finished_events(date):
     return requests.get(url, timeout=10).json().get("events", [])
 
 # -------------------------
-# DADOS DO TIME
+# TEAM DATA
 # -------------------------
 def get_team_data(team_id):
     try:
@@ -63,44 +61,49 @@ def get_team_data(team_id):
                 pts += 3 if as_ > hs else 1 if as_ == hs else 0
 
         jogos = len(data) if data else 1
-
-        return pts / jogos, (gm - gs) / jogos, gm / jogos
+        return pts/jogos, (gm-gs)/jogos, gm/jogos
 
     except:
-        return 1, 0, 1
+        return 1,0,1
 
 # -------------------------
-# NORMALIZAÇÃO
-# -------------------------
-def normalizar(forma, saldo, gols):
-    return forma/3, max(min(saldo/3,1),-1), min(gols/3,1)
-
-# -------------------------
-# SCORE
+# NORMALIZAÇÃO + SCORE
 # -------------------------
 def calcular_score(f, s, g, league_id):
-    fn, sn, gn = normalizar(f, s, g)
+    fn = f/3
+    sn = max(min(s/3,1),-1)
+    gn = min(g/3,1)
 
     base = fn*10 + sn*12 + gn*5
     liga = LEAGUE_STRENGTH.get(league_id, DEFAULT_LEAGUE_STRENGTH)
 
-    return round(base * liga, 2)
+    return round(base * liga,2)
 
 # -------------------------
 # PICK
 # -------------------------
-def definir_pick(diff):
-    if diff >= 3:
-        return "Casa"
-    elif diff <= -5:
-        return "Fora"
-    else:
-        return "Skip"
+def definir_pick(diff, modo):
+
+    if modo == "Aposta":
+        if diff >= 4:
+            return "Casa 🔥" if diff >= 6 else "Casa"
+        elif diff <= -5:
+            return "Fora 🔥" if diff <= -7 else "Fora"
+        else:
+            return "Skip"
+
+    else:  # Análise
+        if diff >= 2:
+            return "Casa"
+        elif diff <= -2:
+            return "Fora"
+        else:
+            return "Skip"
 
 # -------------------------
-# FILTRO V16
+# FILTROS
 # -------------------------
-def passar_filtros(fh, sh, gh, fa, sa, ga, league_id):
+def filtro_aposta(fh, sh, gh, fa, sa, ga, league_id):
 
     liga = LEAGUE_STRENGTH.get(league_id, DEFAULT_LEAGUE_STRENGTH)
 
@@ -117,32 +120,22 @@ def passar_filtros(fh, sh, gh, fa, sa, ga, league_id):
 
     return True
 
-# -------------------------
-# FAIXAS
-# -------------------------
-def faixa_diff(diff):
-    d = abs(diff)
-    if d >= 7:
-        return "7+"
-    elif d >= 6:
-        return "6-7"
-    elif d >= 5:
-        return "5-6"
-    elif d >= 4:
-        return "4-5"
-    else:
-        return "baixo"
+def filtro_analise(fh, fa):
+    return abs(fh-fa) >= 0.2
 
 # -------------------------
 # UI
 # -------------------------
-st.title("⚽ Scanner PRO V17 + Backtest")
+st.title("⚽ Scanner PRO V18 (Análise + Aposta)")
 
-modo = st.radio("Modo", ["Scanner", "Backtest"])
+modo = st.radio("Modo de operação", ["Análise", "Aposta", "Backtest"])
 
 date = st.date_input("Escolha a data")
 
-if modo == "Scanner":
+# -------------------------
+# SCANNER
+# -------------------------
+if modo in ["Análise", "Aposta"]:
 
     events = get_events(date.strftime("%Y-%m-%d"))
 
@@ -151,33 +144,51 @@ if modo == "Scanner":
     for e in events:
         try:
             league_id = e["tournament"]["uniqueTournament"]["id"]
-
             if league_id not in VALID_LEAGUE_IDS:
                 continue
 
-            home_id = e["homeTeam"]["id"]
-            away_id = e["awayTeam"]["id"]
+            home = e["homeTeam"]["name"]
+            away = e["awayTeam"]["name"]
 
-            fh, sh, gh = get_team_data(home_id)
-            fa, sa, ga = get_team_data(away_id)
+            fh, sh, gh = get_team_data(e["homeTeam"]["id"])
+            fa, sa, ga = get_team_data(e["awayTeam"]["id"])
 
-            if not passar_filtros(fh, sh, gh, fa, sa, ga, league_id):
-                continue
+            if modo == "Aposta":
+                if not filtro_aposta(fh, sh, gh, fa, sa, ga, league_id):
+                    continue
+            else:
+                if not filtro_analise(fh, fa):
+                    continue
 
             shome = calcular_score(fh, sh, gh, league_id)
             saway = calcular_score(fa, sa, ga, league_id)
 
             diff = shome - saway
 
-            if not (diff >= 4 or diff <= -5):
+            if modo == "Aposta":
+                if not (diff >= 4 or diff <= -5):
+                    continue
+            else:
+                if not (diff >= 2 or diff <= -2):
+                    continue
+
+            pick = definir_pick(diff, modo)
+
+            if pick == "Skip":
                 continue
 
-            results.append(diff)
+            results.append({
+                "Jogo": f"{home} vs {away}",
+                "Diff": round(diff,2),
+                "Pick": pick
+            })
 
         except:
             continue
 
-    st.write("Picks encontrados:", len(results))
+    df = pd.DataFrame(results)
+    st.dataframe(df)
+    st.write("Total:", len(df))
 
 
 # -------------------------
@@ -190,28 +201,22 @@ if modo == "Backtest":
     total = 0
     acertos = 0
 
-    stats = {}
-
     for e in events:
         try:
             league_id = e["tournament"]["uniqueTournament"]["id"]
-
             if league_id not in VALID_LEAGUE_IDS:
                 continue
 
-            if "homeScore" not in e or "awayScore" not in e:
+            if "homeScore" not in e:
                 continue
 
             hs = e["homeScore"]["current"]
             as_ = e["awayScore"]["current"]
 
-            home_id = e["homeTeam"]["id"]
-            away_id = e["awayTeam"]["id"]
+            fh, sh, gh = get_team_data(e["homeTeam"]["id"])
+            fa, sa, ga = get_team_data(e["awayTeam"]["id"])
 
-            fh, sh, gh = get_team_data(home_id)
-            fa, sa, ga = get_team_data(away_id)
-
-            if not passar_filtros(fh, sh, gh, fa, sa, ga, league_id):
+            if not filtro_analise(fh, fa):
                 continue
 
             shome = calcular_score(fh, sh, gh, league_id)
@@ -219,10 +224,10 @@ if modo == "Backtest":
 
             diff = shome - saway
 
-            if not (diff >= 4 or diff <= -5):
+            if not (diff >= 2 or diff <= -2):
                 continue
 
-            pick = definir_pick(diff)
+            pick = definir_pick(diff, "Análise")
 
             if pick == "Skip":
                 continue
@@ -231,36 +236,13 @@ if modo == "Backtest":
 
             resultado = "Casa" if hs > as_ else "Fora" if as_ > hs else "Empate"
 
-            win = (pick == resultado)
-
-            if win:
+            if pick.startswith(resultado):
                 acertos += 1
-
-            faixa = faixa_diff(diff)
-
-            if faixa not in stats:
-                stats[faixa] = {"total":0,"win":0}
-
-            stats[faixa]["total"] += 1
-            if win:
-                stats[faixa]["win"] += 1
 
         except:
             continue
 
     if total > 0:
-        st.write("Acerto geral:", round(acertos/total*100,2), "%")
-
-        tabela = []
-        for f in stats:
-            t = stats[f]["total"]
-            w = stats[f]["win"]
-            taxa = round(w/t*100,2) if t else 0
-
-            tabela.append([f, t, taxa])
-
-        df = pd.DataFrame(tabela, columns=["Faixa Diff","Jogos","Acerto %"])
-        st.dataframe(df)
-
+        st.write("Taxa de acerto:", round(acertos/total*100,2), "%")
     else:
         st.write("Sem dados suficientes.")
