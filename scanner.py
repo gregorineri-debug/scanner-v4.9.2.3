@@ -38,6 +38,23 @@ LEAGUE_NAMES = {
 }
 
 # -------------------------
+# FORÇA DA LIGA (ANTI-ZEBRA)
+# -------------------------
+LEAGUE_STRENGTH = {
+    17: 1.0, 8: 1.0, 23: 1.0, 35: 1.0,   # top ligas
+    34: 0.95, 238: 0.9,
+    325: 0.9,
+    955: 0.85,
+    52: 0.85,
+    247: 0.75,
+    808: 0.7,
+    703: 0.7
+}
+
+# default
+DEFAULT_LEAGUE_STRENGTH = 0.8
+
+# -------------------------
 # API
 # -------------------------
 def get_events(date):
@@ -54,14 +71,11 @@ def is_valid_league(event):
         return False
 
 def is_same_day_br(event, selected_date):
-    try:
-        utc = datetime.utcfromtimestamp(event["startTimestamp"]).replace(tzinfo=ZoneInfo("UTC"))
-        return utc.astimezone(BR_TZ).date() == selected_date
-    except:
-        return False
+    utc = datetime.utcfromtimestamp(event["startTimestamp"]).replace(tzinfo=ZoneInfo("UTC"))
+    return utc.astimezone(BR_TZ).date() == selected_date
 
 # -------------------------
-# DADOS DOS TIMES (últimos 5 jogos)
+# DADOS DO TIME
 # -------------------------
 def get_team_data(team_id):
 
@@ -101,55 +115,48 @@ def get_team_data(team_id):
 # -------------------------
 def normalizar(forma, saldo, gols):
 
-    forma_n = forma / 3                    # 0–1
-    saldo_n = max(min(saldo / 3, 1), -1)   # -1 a 1
-    ataque_n = min(gols / 3, 1)            # 0–1
+    forma_n = forma / 3
+    saldo_n = max(min(saldo / 3, 1), -1)
+    ataque_n = min(gols / 3, 1)
 
-    # proxies controlados
-    posse_n = ataque_n
-    xg_n = ataque_n
-
-    return forma_n, saldo_n, posse_n, xg_n
+    return forma_n, saldo_n, ataque_n
 
 # -------------------------
-# SCORE FINAL
+# SCORE COM LIGA
 # -------------------------
-def calcular_score(team_id):
+def calcular_score(team_id, league_id):
 
     forma, saldo, gols = get_team_data(team_id)
-    forma_n, saldo_n, posse_n, xg_n = normalizar(forma, saldo, gols)
+    forma_n, saldo_n, ataque_n = normalizar(forma, saldo, gols)
 
-    score = (
+    base_score = (
         forma_n * 8 +
         saldo_n * 8 +
-        posse_n * 9 +
-        xg_n * 10
+        ataque_n * 10
     )
 
-    return round(score, 2)
+    liga_strength = LEAGUE_STRENGTH.get(league_id, DEFAULT_LEAGUE_STRENGTH)
+
+    final_score = base_score * liga_strength
+
+    return round(final_score, 2)
 
 # -------------------------
-# PICK FINAL (CORRIGIDO)
+# PICK
 # -------------------------
 def definir_pick(diff):
 
     if diff > 0:
-        if diff >= 6:
-            return "Casa (1) 🔥"
-        return "Casa (1)"
-
+        return "Casa (1) 🔥" if diff >= 5 else "Casa (1)"
     elif diff < 0:
-        if diff <= -6:
-            return "Fora (2) 🔥"
-        return "Fora (2)"
-
+        return "Fora (2) 🔥" if diff <= -5 else "Fora (2)"
     else:
         return "Equilibrado"
 
 # -------------------------
 # UI
 # -------------------------
-st.title("⚽ Scanner PRO V14 FINAL")
+st.title("⚽ Scanner PRO V15 (Anti-Zebra Ativado)")
 
 date = st.date_input("Escolha a data")
 
@@ -171,11 +178,13 @@ if st.button("Analisar Jogos"):
             utc = datetime.utcfromtimestamp(e["startTimestamp"]).replace(tzinfo=ZoneInfo("UTC"))
             hora = utc.astimezone(BR_TZ).strftime("%H:%M")
 
+            league_id = e["tournament"]["uniqueTournament"]["id"]
+
             home_id = e["homeTeam"]["id"]
             away_id = e["awayTeam"]["id"]
 
-            score_home = calcular_score(home_id)
-            score_away = calcular_score(away_id)
+            score_home = calcular_score(home_id, league_id)
+            score_away = calcular_score(away_id, league_id)
 
             diff = round(score_home - score_away, 2)
 
@@ -183,9 +192,7 @@ if st.button("Analisar Jogos"):
 
             results.append({
                 "Hora": hora,
-                "Liga": LEAGUE_NAMES.get(
-                    e["tournament"]["uniqueTournament"]["id"], "Outra"
-                ),
+                "Liga": LEAGUE_NAMES.get(league_id, "Outra"),
                 "Jogo": f"{e['homeTeam']['name']} vs {e['awayTeam']['name']}",
                 "Score_Casa": score_home,
                 "Score_Fora": score_away,
