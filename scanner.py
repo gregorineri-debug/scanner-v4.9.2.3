@@ -119,16 +119,16 @@ def normalizar(forma, saldo, gols):
     return forma_n, saldo_n, ataque_n
 
 # -------------------------
-# SCORE COM LIGA
+# SCORE COM PESOS AJUSTADOS
 # -------------------------
 def calcular_score(team_id, league_id):
     forma, saldo, gols = get_team_data(team_id)
     forma_n, saldo_n, ataque_n = normalizar(forma, saldo, gols)
 
     base_score = (
-        forma_n * 8 +
-        saldo_n * 8 +
-        ataque_n * 10
+        forma_n * 10 +
+        saldo_n * 12 +
+        ataque_n * 5
     )
 
     liga_strength = LEAGUE_STRENGTH.get(league_id, DEFAULT_LEAGUE_STRENGTH)
@@ -138,26 +138,23 @@ def calcular_score(team_id, league_id):
     return round(final_score, 2)
 
 # -------------------------
-# PICK (AJUSTADO)
+# PICK
 # -------------------------
 def definir_pick(diff):
 
-    # CASA → diferença >= 3
     if diff >= 3:
         return "Casa (1) 🔥" if diff >= 5 else "Casa (1)"
 
-    # FORA → diferença <= -5
     elif diff <= -5:
         return "Fora (2) 🔥" if diff <= -7 else "Fora (2)"
 
-    # RESTO → neutro
     else:
         return "Equilibrado"
 
 # -------------------------
 # UI
 # -------------------------
-st.title("⚽ Scanner PRO V15 (Anti-Zebra Ativado)")
+st.title("⚽ Scanner PRO V15.1 (Pesos Ajustados + Anti-Zebra)")
 
 date = st.date_input("Escolha a data")
 
