@@ -84,9 +84,9 @@ def get_team_data(team_id):
 
         jogos = len(data) if data else 1
 
-        forma = pts / jogos              # 0–3
-        saldo = (gm - gs) / jogos        # ~ -3 a +3
-        gols = gm / jogos                # ~ 0–3
+        forma = pts / jogos
+        saldo = (gm - gs) / jogos
+        gols = gm / jogos
 
         return forma, saldo, gols
 
@@ -98,18 +98,17 @@ def get_team_data(team_id):
 # -------------------------
 def normalizar(forma, saldo, gols):
 
-    forma_n = forma / 3                        # 0–1
-    saldo_n = max(min(saldo / 3, 1), -1)       # -1 a 1
-    ataque_n = min(gols / 3, 1)                # 0–1
+    forma_n = forma / 3
+    saldo_n = max(min(saldo / 3, 1), -1)
+    ataque_n = min(gols / 3, 1)
 
-    # proxies mais controlados
-    posse_n = ataque_n                         # proxy leve
-    xg_n = ataque_n                            # proxy leve
+    posse_n = ataque_n
+    xg_n = ataque_n
 
     return forma_n, saldo_n, posse_n, xg_n
 
 # -------------------------
-# SCORE FINAL
+# SCORE
 # -------------------------
 def calcular_score(team_id):
 
@@ -126,15 +125,13 @@ def calcular_score(team_id):
     return round(score, 2)
 
 # -------------------------
-# PICK
+# PICK AJUSTADO (BASEADO NO SINAL)
 # -------------------------
-def definir_pick(home_score, away_score):
+def definir_pick(diff):
 
-    diff = home_score - away_score
-
-    if diff >= 4:
+    if diff > 4:
         return "Casa (1)"
-    elif diff <= -4:
+    elif diff < -4:
         return "Fora (2)"
     else:
         return "Equilibrado"
@@ -142,7 +139,7 @@ def definir_pick(home_score, away_score):
 # -------------------------
 # UI
 # -------------------------
-st.title("⚽ Scanner PRO V14 (Normalização Profissional)")
+st.title("⚽ Scanner PRO V14 (Score Normalizado)")
 
 date = st.date_input("Escolha a data")
 
@@ -170,7 +167,9 @@ if st.button("Analisar Jogos"):
             score_home = calcular_score(home_id)
             score_away = calcular_score(away_id)
 
-            pick = definir_pick(score_home, score_away)
+            diff = round(score_home - score_away, 2)
+
+            pick = definir_pick(diff)
 
             results.append({
                 "Hora": hora,
@@ -180,7 +179,7 @@ if st.button("Analisar Jogos"):
                 "Jogo": f"{e['homeTeam']['name']} vs {e['awayTeam']['name']}",
                 "Score_Casa": score_home,
                 "Score_Fora": score_away,
-                "Diferença": round(score_home - score_away, 2),
+                "Diferença": diff,
                 "Pick": pick
             })
 
