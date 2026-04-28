@@ -99,7 +99,7 @@ def league_profile(liga):
 
 
 def contains_any(text, names):
-    text = text.lower()
+    text = str(text).lower()
     return any(name.lower() in text for name in names)
 
 
@@ -333,25 +333,33 @@ def analyze_cards(row):
     }
 
 
+# =========================================================
+# EXPORTAÇÃO EXCEL COM OPENPYXL
+# =========================================================
+
 def to_excel(dfs):
     output = BytesIO()
 
-    with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
         for sheet_name, df in dfs.items():
             df.to_excel(writer, sheet_name=sheet_name, index=False)
 
-            workbook = writer.book
             worksheet = writer.sheets[sheet_name]
 
-            header_format = workbook.add_format({
-                "bold": True,
-                "bg_color": "#D9EAF7",
-                "border": 1
-            })
+            for column_cells in worksheet.columns:
+                max_length = 0
+                column_letter = column_cells[0].column_letter
 
-            for col_num, value in enumerate(df.columns.values):
-                worksheet.write(0, col_num, value, header_format)
-                worksheet.set_column(col_num, col_num, 22)
+                for cell in column_cells:
+                    try:
+                        value_length = len(str(cell.value))
+                        if value_length > max_length:
+                            max_length = value_length
+                    except Exception:
+                        pass
+
+                adjusted_width = min(max_length + 2, 40)
+                worksheet.column_dimensions[column_letter].width = adjusted_width
 
     return output.getvalue()
 
@@ -363,14 +371,15 @@ def to_excel(dfs):
 st.title("⚽ Scanner X10 — SCEM + Consenso PRO Multi-Mercados")
 
 st.markdown("""
-Este scanner analisa os jogos em quatro mercados:
+Scanner V1 manual, sem API.
 
+Analisa:
 - Vitória
 - Gols
 - Escanteios
 - Cartões
-
-Versão V1: entrada manual, sem API.
+- Momentum Score
+- Estratégia de múltiplas e singles
 """)
 
 default_text = """11:00\tEgito\tPetrojet vs Ismaily
@@ -431,7 +440,10 @@ if run:
     corners = corners[corners["Score"] >= min_score].sort_values("Score", ascending=False)
     cards = cards[cards["Score"] >= min_score].sort_values("Score", ascending=False)
 
-    display_cols = ["Hora", "Jogo", "Liga", "Pick", "Força", "Tipo", "Consenso", "Momentum", "Score"]
+    display_cols = [
+        "Hora", "Jogo", "Liga", "Pick", "Força",
+        "Tipo", "Consenso", "Momentum", "Score"
+    ]
 
     st.success(f"{len(df_games)} jogos analisados com sucesso.")
 
@@ -470,19 +482,26 @@ if run:
         ])
 
         multiplas = all_picks[all_picks["Score"] >= 72].sort_values("Score", ascending=False)
+
         singles = all_picks[
             (all_picks["Score"] >= 58) & (all_picks["Score"] < 72)
         ].sort_values("Score", ascending=False)
 
         st.markdown("### 🔒 Picks para múltiplas — 4 e 5 estrelas")
         st.dataframe(
-            multiplas[["Mercado", "Hora", "Jogo", "Liga", "Pick", "Força", "Tipo", "Score"]],
+            multiplas[[
+                "Mercado", "Hora", "Jogo", "Liga",
+                "Pick", "Força", "Tipo", "Score"
+            ]],
             use_container_width=True
         )
 
         st.markdown("### 💰 Singles de valor — 3 estrelas")
         st.dataframe(
-            singles[["Mercado", "Hora", "Jogo", "Liga", "Pick", "Força", "Tipo", "Score"]],
+            singles[[
+                "Mercado", "Hora", "Jogo", "Liga",
+                "Pick", "Força", "Tipo", "Score"
+            ]],
             use_container_width=True
         )
 
