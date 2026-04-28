@@ -1,9 +1,4 @@
 streamlit
 pandas
-numpy
-requests
-matplotlib
-schedule
-beautifulsoup4
-streamlit
-lxml
+xlsxwriter
+openpyxl
