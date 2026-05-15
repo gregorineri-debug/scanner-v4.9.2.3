@@ -4,6 +4,7 @@ import requests
 import re
 import json
 import zipfile
+import unicodedata
 from io import BytesIO
 from datetime import date
 
@@ -20,6 +21,13 @@ HEADERS = {
 }
 
 BTTS_THRESHOLD = 75
+
+
+def normalize_text(text):
+    text = str(text).lower().strip()
+    text = unicodedata.normalize("NFKD", text)
+    text = "".join(c for c in text if not unicodedata.combining(c))
+    return text
 
 
 def safe_get(url, timeout=20):
@@ -83,10 +91,48 @@ def is_finished(ev):
     return status.get("type") == "finished"
 
 
-def same_league(ev, league_name):
-    tournament = ev.get("tournament", {}) or {}
-    name = tournament.get("name", "")
-    return str(name).strip().lower() == str(league_name).strip().lower()
+def league_matches_fuzzy(event_league, input_league):
+    ev = normalize_text(event_league)
+    inp = normalize_text(input_league)
+
+    if not inp:
+        return True
+
+    if ev == inp:
+        return True
+
+    if inp in ev or ev in inp:
+        return True
+
+    aliases = {
+        "polonia": ["ekstraklasa", "i liga", "poland"],
+        "croacia": ["hnl", "croatia"],
+        "turquia": ["super lig", "turkey"],
+        "egito": ["premier league", "egypt"],
+        "portugal 2": ["liga portugal 2", "segunda liga"],
+        "romenia": ["superliga", "romania"],
+        "serie b italia": ["serie b"],
+        "ligue 1": ["ligue 1", "ligue 2"],
+        "la liga 2": ["laliga 2", "segunda division"],
+        "belgica": ["pro league", "belgium"],
+        "irlanda": ["premier division", "ireland"],
+        "escocia": ["championship", "scotland"],
+        "premier league": ["premier league"],
+        "peru": ["liga 1", "peru"],
+        "paraguai apertura": ["division de honor", "paraguay"],
+        "uruguai": ["primera division", "uruguay"],
+        "chile": ["primera division", "chile"],
+        "primera nacional": ["primera nacional"],
+        "saudi pro league": ["saudi pro league", "pro league"],
+    }
+
+    for key, values in aliases.items():
+        if key in inp:
+            for v in values:
+                if v in ev:
+                    return True
+
+    return False
 
 
 def fetch_sofascore_events(selected_date):
@@ -177,7 +223,18 @@ def search_team_id(team_name):
         url = f"https://www.sofascore.com/api/v1/search/all?q={q}"
         data = safe_get(url)
 
-        for item in data.get("results", []):
+        results = data.get("results", [])
+
+        for item in results:
+            entity = item.get("entity", {}) or {}
+            sport = entity.get("sport", {}) or {}
+            entity_type = entity.get("type", "")
+
+            if sport.get("name", "").lower() == "football" and entity.get("id"):
+                if entity_type in ["team", "club"]:
+                    return entity.get("id", "")
+
+        for item in results:
             entity = item.get("entity", {}) or {}
             sport = entity.get("sport", {}) or {}
 
@@ -191,32 +248,47 @@ def search_team_id(team_name):
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def fetch_recent_team_events(team_id, pages=4):
+def fetch_recent_team_events(team_id, pages=6):
     events = []
 
     if not team_id:
         return events
 
     for page in range(pages):
-        try:
-            url = f"https://www.sofascore.com/api/v1/team/{team_id}/events/last/{page}"
-            data = safe_get(url)
-            events.extend(data.get("events", []))
-        except Exception:
-            break
+        urls = [
+            f"https://www.sofascore.com/api/v1/team/{team_id}/events/last/{page}",
+            f"https://www.sofascore.com/api/v1/team/{team_id}/events/last/{page + 1}",
+        ]
 
-    return events
+        for url in urls:
+            try:
+                data = safe_get(url)
+                events.extend(data.get("events", []))
+            except Exception:
+                continue
+
+    unique = {}
+    for ev in events:
+        ev_id = ev.get("id")
+        if ev_id:
+            unique[ev_id] = ev
+
+    return list(unique.values())
 
 
-def filter_team_matches(events, team_id, league_name, venue=None, limit=5):
+def filter_team_matches(events, team_id, league_name, venue=None, limit=5, strict_league=True):
     matches = []
 
     for ev in events:
         if not is_finished(ev):
             continue
 
-        if not same_league(ev, league_name):
-            continue
+        tournament = ev.get("tournament", {}) or {}
+        event_league = tournament.get("name", "")
+
+        if strict_league:
+            if not league_matches_fuzzy(event_league, league_name):
+                continue
 
         home = ev.get("homeTeam", {}) or {}
         away = ev.get("awayTeam", {}) or {}
@@ -239,6 +311,7 @@ def filter_team_matches(events, team_id, league_name, venue=None, limit=5):
             continue
 
         matches.append({
+            "league": event_league,
             "home": home.get("name", ""),
             "away": away.get("name", ""),
             "home_goals": hg,
@@ -251,6 +324,32 @@ def filter_team_matches(events, team_id, league_name, venue=None, limit=5):
             break
 
     return matches
+
+
+def get_matches_with_fallback(events, team_id, league_name, venue=None, limit=5):
+    matches = filter_team_matches(
+        events=events,
+        team_id=team_id,
+        league_name=league_name,
+        venue=venue,
+        limit=limit,
+        strict_league=True
+    )
+
+    origem = "Liga/filtro flexível"
+
+    if len(matches) < 3:
+        matches = filter_team_matches(
+            events=events,
+            team_id=team_id,
+            league_name=league_name,
+            venue=venue,
+            limit=limit,
+            strict_league=False
+        )
+        origem = "Últimos jogos gerais"
+
+    return matches, origem
 
 
 def stats_from_matches(matches):
@@ -282,11 +381,21 @@ def analyze_btts(row):
     home_events = fetch_recent_team_events(home_id)
     away_events = fetch_recent_team_events(away_id)
 
-    home_last5 = filter_team_matches(home_events, home_id, liga, venue=None, limit=5)
-    away_last5 = filter_team_matches(away_events, away_id, liga, venue=None, limit=5)
+    home_last5, origem_home_geral = get_matches_with_fallback(
+        home_events, home_id, liga, venue=None, limit=5
+    )
 
-    home_home5 = filter_team_matches(home_events, home_id, liga, venue="home", limit=5)
-    away_away5 = filter_team_matches(away_events, away_id, liga, venue="away", limit=5)
+    away_last5, origem_away_geral = get_matches_with_fallback(
+        away_events, away_id, liga, venue=None, limit=5
+    )
+
+    home_home5, origem_home_casa = get_matches_with_fallback(
+        home_events, home_id, liga, venue="home", limit=5
+    )
+
+    away_away5, origem_away_fora = get_matches_with_fallback(
+        away_events, away_id, liga, venue="away", limit=5
+    )
 
     s_home = stats_from_matches(home_last5)
     s_away = stats_from_matches(away_last5)
@@ -317,12 +426,22 @@ def analyze_btts(row):
         score = score_no
         detalhe = f"Geral NÃO {general_no}% | Casa/Fora NÃO {venue_no}%"
 
-    if min_sample < 3:
+    if min_sample == 0:
+        score = 0
+        detalhe += " | Sem dados encontrados"
+    elif min_sample < 3:
         score = min(score, 64)
         detalhe += " | Amostra baixa"
 
     positivo = "SIM" if score >= BTTS_THRESHOLD else "NÃO"
     pick = pick_real if positivo == "SIM" else "Sem entrada"
+
+    origem = (
+        f"Mandante geral: {origem_home_geral} | "
+        f"Visitante geral: {origem_away_geral} | "
+        f"Mandante casa: {origem_home_casa} | "
+        f"Visitante fora: {origem_away_fora}"
+    )
 
     return {
         "Hora": row["Hora"],
@@ -335,21 +454,18 @@ def analyze_btts(row):
         "Consenso": consensus_label(score),
         "Positivo 75%+": positivo,
         "Score": score,
-        "Últ.5 Mandante Liga BTTS SIM": f'{s_home["pct_sim"]}% ({s_home["ambos_sim"]}/{s_home["jogos"]})',
-        "Últ.5 Visitante Liga BTTS SIM": f'{s_away["pct_sim"]}% ({s_away["ambos_sim"]}/{s_away["jogos"]})',
-        "Mandante em casa BTTS SIM": f'{s_home_venue["pct_sim"]}% ({s_home_venue["ambos_sim"]}/{s_home_venue["jogos"]})',
-        "Visitante fora BTTS SIM": f'{s_away_venue["pct_sim"]}% ({s_away_venue["ambos_sim"]}/{s_away_venue["jogos"]})',
-        "Detalhe": detalhe
+        "Últ.5 Mandante Geral SIM": f'{s_home["pct_sim"]}% ({s_home["ambos_sim"]}/{s_home["jogos"]})',
+        "Últ.5 Visitante Geral SIM": f'{s_away["pct_sim"]}% ({s_away["ambos_sim"]}/{s_away["jogos"]})',
+        "Mandante Casa SIM": f'{s_home_venue["pct_sim"]}% ({s_home_venue["ambos_sim"]}/{s_home_venue["jogos"]})',
+        "Visitante Fora SIM": f'{s_away_venue["pct_sim"]}% ({s_away_venue["ambos_sim"]}/{s_away_venue["jogos"]})',
+        "Detalhe": detalhe,
+        "Origem dos dados": origem,
+        "Casa ID": home_id,
+        "Fora ID": away_id
     }
 
 
 def to_excel_or_zip(dfs):
-    """
-    Tenta gerar Excel com openpyxl.
-    Se openpyxl não estiver instalado, gera ZIP com CSVs.
-    Assim o app não quebra no Streamlit Cloud.
-    """
-
     try:
         import openpyxl
 
@@ -398,9 +514,11 @@ st.title("⚽ Scanner X10 — Ambos Marcam / Ambos Não Marcam")
 st.markdown("""
 Estudo específico para **Ambos Marcam SIM/NÃO**:
 
-- Últimos 5 jogos de cada time na liga
-- Últimos 5 jogos do mandante em casa na liga
-- Últimos 5 jogos do visitante fora na liga
+- Últimos 5 jogos recentes dos dois times
+- Últimos 5 jogos do mandante em casa
+- Últimos 5 jogos do visitante fora
+- Primeiro tenta filtrar pela liga
+- Se não encontrar dados suficientes, usa fallback com jogos gerais recentes
 - Entrada positiva somente com **75% ou mais**
 """)
 
@@ -445,9 +563,9 @@ else:
     manual_text = st.text_area(
         "Cole no formato: Hora TAB Liga TAB Jogo",
         height=300,
-        value="""15:00\tPremier League\tArsenal vs Chelsea
-16:00\tSerie A\tInter vs Lazio
-21:30\tBrazilian Serie A\tFlamengo vs Palmeiras"""
+        value="""09:30\tParaguai Apertura\tOlimpia vs Recoleta FC
+10:30\tPolônia\tKS Lechia Gdańsk vs Legia Warszawa
+16:00\tPremier League\tAston Villa vs Liverpool FC"""
     )
 
     if st.button("📋 Ler lista manual"):
@@ -465,7 +583,7 @@ if not df_games.empty:
     min_score = st.slider("Score mínimo para exibir", 0, 100, 75)
 
     if st.button("🚀 Rodar Scanner X10 BTTS"):
-        with st.spinner("Analisando últimos 5 jogos na liga e recortes casa/fora..."):
+        with st.spinner("Buscando dados históricos e analisando BTTS..."):
             btts = pd.DataFrame([analyze_btts(row) for _, row in df_games.iterrows()])
 
         btts_filtrado = btts[btts["Score"] >= min_score].sort_values(
@@ -502,11 +620,14 @@ if not df_games.empty:
             "Liga",
             "Pick",
             "Score",
-            "Últ.5 Mandante Liga BTTS SIM",
-            "Últ.5 Visitante Liga BTTS SIM",
-            "Mandante em casa BTTS SIM",
-            "Visitante fora BTTS SIM",
-            "Detalhe"
+            "Últ.5 Mandante Geral SIM",
+            "Últ.5 Visitante Geral SIM",
+            "Mandante Casa SIM",
+            "Visitante Fora SIM",
+            "Detalhe",
+            "Origem dos dados",
+            "Casa ID",
+            "Fora ID"
         ]
 
         tab1, tab2, tab3, tab4 = st.tabs([
@@ -521,11 +642,14 @@ if not df_games.empty:
             st.dataframe(positivos[display_cols], use_container_width=True)
 
         with tab2:
-            st.markdown("### 📊 Todos os jogos analisados")
+            st.markdown("### 📊 Todos os jogos acima do filtro")
             st.dataframe(btts_filtrado[display_cols], use_container_width=True)
 
-            st.markdown("### 👀 Monitorar — abaixo de 75%")
+            st.markdown("### 👀 Monitorar — 65% a 74%")
             st.dataframe(monitorar[display_cols], use_container_width=True)
+
+            st.markdown("### Todos os jogos analisados")
+            st.dataframe(btts[display_cols], use_container_width=True)
 
         with tab3:
             st.markdown("### 🔎 Base do cálculo")
@@ -535,7 +659,8 @@ if not df_games.empty:
             "BTTS_75_positivo": positivos[display_cols],
             "Todos_filtrados": btts_filtrado[display_cols],
             "Detalhamento": btts[detail_cols],
-            "Monitorar": monitorar[display_cols]
+            "Monitorar": monitorar[display_cols],
+            "Todos": btts[display_cols]
         })
 
         with tab4:
