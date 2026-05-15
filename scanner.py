@@ -101,6 +101,36 @@ def fetch_raw_scheduled_events(selected_date):
     return data.get("events", [])
 
 
+@st.cache_data(ttl=1800, show_spinner=False)
+def get_schedule_map(selected_date):
+    try:
+        events = fetch_raw_scheduled_events(selected_date)
+    except Exception:
+        return {}
+
+    mapping = {}
+
+    for ev in events:
+        home = ev.get("homeTeam", {}) or {}
+        away = ev.get("awayTeam", {}) or {}
+
+        home_name = normalize_text(home.get("name", ""))
+        away_name = normalize_text(away.get("name", ""))
+
+        if not home_name or not away_name:
+            continue
+
+        mapping[(home_name, away_name)] = {
+            "home_id": home.get("id", ""),
+            "away_id": away.get("id", ""),
+            "home_name": home.get("name", ""),
+            "away_name": away.get("name", ""),
+            "league": (ev.get("tournament", {}) or {}).get("name", "")
+        }
+
+    return mapping
+
+
 def parse_sofascore_json(data):
     rows = []
 
@@ -145,6 +175,7 @@ def parse_manual_games(text):
 
     for line in text.splitlines():
         line = line.strip()
+
         if not line:
             continue
 
@@ -158,6 +189,7 @@ def parse_manual_games(text):
             match = re.match(r"^(\d{1,2}:\d{2})\s+(.+?)\s{2,}(.+)$", line)
             if not match:
                 continue
+
             hora, liga, jogo = match.groups()
 
         if " vs " not in jogo:
@@ -178,72 +210,54 @@ def parse_manual_games(text):
     return pd.DataFrame(rows)
 
 
-def name_match_score(a, b):
-    a = normalize_text(a)
-    b = normalize_text(b)
-
-    if not a or not b:
-        return 0
-
-    if a == b:
-        return 100
-
-    if a in b or b in a:
-        return 80
-
-    aw = set(a.split())
-    bw = set(b.split())
-
-    if not aw or not bw:
-        return 0
-
-    common = len(aw & bw)
-    total = max(len(aw), len(bw))
-
-    return int((common / total) * 70)
-
-
-def enrich_ids_from_schedule(df, selected_date):
-    try:
-        events = fetch_raw_scheduled_events(selected_date)
-    except Exception:
-        return df
-
-    enriched = df.copy()
+def enrich_ids_from_schedule(df_games, selected_date):
+    mapping = get_schedule_map(selected_date)
+    enriched = df_games.copy()
 
     for idx, row in enriched.iterrows():
-        casa = row["Casa"]
-        fora = row["Fora"]
+        casa = normalize_text(row["Casa"])
+        fora = normalize_text(row["Fora"])
 
-        best = None
+        found = None
         best_score = 0
 
-        for ev in events:
-            home = ev.get("homeTeam", {}) or {}
-            away = ev.get("awayTeam", {}) or {}
+        for (home_map, away_map), val in mapping.items():
+            score = 0
 
-            home_name = home.get("name", "")
-            away_name = away.get("name", "")
+            if casa == home_map:
+                score += 100
+            elif casa in home_map or home_map in casa:
+                score += 80
+            else:
+                casa_words = set(casa.split())
+                home_words = set(home_map.split())
+                if casa_words and home_words:
+                    score += int((len(casa_words & home_words) / max(len(casa_words), len(home_words))) * 60)
 
-            score_normal = name_match_score(casa, home_name) + name_match_score(fora, away_name)
-            score_invertido = name_match_score(casa, away_name) + name_match_score(fora, home_name)
-
-            score = max(score_normal, score_invertido)
+            if fora == away_map:
+                score += 100
+            elif fora in away_map or away_map in fora:
+                score += 80
+            else:
+                fora_words = set(fora.split())
+                away_words = set(away_map.split())
+                if fora_words and away_words:
+                    score += int((len(fora_words & away_words) / max(len(fora_words), len(away_words))) * 60)
 
             if score > best_score:
                 best_score = score
-                best = ev
+                found = val
 
-        if best is not None and best_score >= 90:
-            home = best.get("homeTeam", {}) or {}
-            away = best.get("awayTeam", {}) or {}
-            tournament = best.get("tournament", {}) or {}
+        if found and best_score >= 90:
+            enriched.at[idx, "Casa ID"] = found["home_id"]
+            enriched.at[idx, "Fora ID"] = found["away_id"]
 
-            enriched.at[idx, "Casa ID"] = home.get("id", "")
-            enriched.at[idx, "Fora ID"] = away.get("id", "")
+            if found["league"]:
+                enriched.at[idx, "Liga"] = found["league"]
 
-            if tournament.get("name"):
-                enriched.at[idx, "Liga"] = tournament.get("name")
+            enriched.at[idx, "Jogo"] = f'{found["home_name"]} vs {found["away_name"]}'
+            enriched.at[idx, "Casa"] = found["home_name"]
+            enriched.at[idx, "Fora"] = found["away_name"]
 
     return enriched
 
@@ -330,9 +344,6 @@ def stats_from_matches(matches):
 
 
 def analyze_btts(row):
-    casa = row["Casa"]
-    fora = row["Fora"]
-
     home_id = row.get("Casa ID", "")
     away_id = row.get("Fora ID", "")
 
@@ -447,11 +458,12 @@ st.title("⚽ Scanner X10 — Ambos Marcam / Ambos Não Marcam")
 st.markdown("""
 Scanner para **Ambos Marcam SIM/NÃO**.
 
-Correção aplicada:
-- Para lista manual, o app busca os jogos da data no SofaScore;
-- Cruza os nomes dos times;
-- Preenche automaticamente os IDs oficiais;
-- Depois busca os últimos jogos de cada equipe.
+- Busca jogos do dia no SofaScore
+- Puxa IDs oficiais dos times
+- Analisa últimos 5 jogos gerais
+- Analisa últimos 5 do mandante em casa
+- Analisa últimos 5 do visitante fora
+- Marca positivo somente com **75% ou mais**
 """)
 
 modo = st.radio(
@@ -460,10 +472,10 @@ modo = st.radio(
     horizontal=True,
 )
 
-df_games = pd.DataFrame()
-
 selected_date = st.date_input("Data dos jogos para buscar IDs/histórico", value=date.today())
 date_str = selected_date.strftime("%Y-%m-%d")
+
+df_games = pd.DataFrame()
 
 if modo == "SofaScore automático":
     if st.button("🔎 Buscar jogos no SofaScore"):
@@ -496,16 +508,25 @@ else:
     )
 
     if st.button("📋 Ler lista manual + buscar IDs no SofaScore"):
-        df_games = parse_manual_games(manual_text)
-        df_games = enrich_ids_from_schedule(df_games, date_str)
+        with st.spinner("Buscando IDs oficiais dos times..."):
+            df_games = parse_manual_games(manual_text)
+            df_games = enrich_ids_from_schedule(df_games, date_str)
+
         st.session_state["df_games"] = df_games
-        st.success(f"{len(df_games)} jogos lidos manualmente.")
+
+        achados = (
+            (df_games["Casa ID"] != "") &
+            (df_games["Fora ID"] != "")
+        ).sum()
+
+        st.success(f"{achados}/{len(df_games)} jogos com IDs encontrados.")
 
 if "df_games" in st.session_state:
     df_games = st.session_state["df_games"]
 
 if not df_games.empty:
     st.subheader("Jogos carregados")
+
     st.dataframe(
         df_games[["Hora", "Liga", "Jogo", "Casa ID", "Fora ID"]],
         use_container_width=True
