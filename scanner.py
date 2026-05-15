@@ -468,16 +468,20 @@ if st.button("📥 Ler JSON + filtrar jogos escolhidos"):
         json_text = json_text.strip()
 
         if json_text.startswith("http"):
-            data = safe_get(json_text)
+    raise Exception(
+        "O Streamlit Cloud recebeu bloqueio 403 do SofaScore. "
+        "Abra esse link no navegador, copie o JSON completo e cole aqui."
+    )
 
-        else:
+if not json_text:
+    raise Exception("Campo JSON vazio. Cole o JSON bruto do SofaScore.")
 
-            if not json_text:
-                raise Exception(
-                    "Campo JSON vazio. Cole o JSON ou URL."
-                )
+if not json_text.startswith("{"):
+    raise Exception(
+        "Texto inválido. Cole o JSON bruto, começando com {"
+    )
 
-            data = json.loads(json_text)
+data = json.loads(json_text)
 
         df_json = parse_sofascore_json(data)
 
