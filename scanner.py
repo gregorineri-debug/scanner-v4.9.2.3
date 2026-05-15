@@ -3,10 +3,14 @@ import pandas as pd
 import requests
 import re
 import json
+import zipfile
 from io import BytesIO
 from datetime import date
 
-st.set_page_config(page_title="Scanner X10 - Ambos Marcam", layout="wide")
+st.set_page_config(
+    page_title="Scanner X10 - Ambos Marcam",
+    layout="wide"
+)
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0",
@@ -21,18 +25,18 @@ BTTS_THRESHOLD = 75
 def safe_get(url, timeout=20):
     r = requests.get(url, headers=HEADERS, timeout=timeout)
     if r.status_code != 200:
-        raise Exception(f"Status {r.status_code} em {url}")
+        raise Exception(f"Status {r.status_code}")
     return r.json()
 
 
 def stars(score):
     if score >= 90:
         return "⭐⭐⭐⭐⭐"
-    if score >= 80:
+    elif score >= 80:
         return "⭐⭐⭐⭐"
-    if score >= 75:
+    elif score >= 75:
         return "⭐⭐⭐"
-    if score >= 65:
+    elif score >= 65:
         return "⭐⭐"
     return "⭐"
 
@@ -40,9 +44,9 @@ def stars(score):
 def bet_type(score):
     if score >= 85:
         return "CONSERVADOR"
-    if score >= 75:
+    elif score >= 75:
         return "POSITIVO"
-    if score >= 65:
+    elif score >= 65:
         return "MONITORAR"
     return "EVITAR"
 
@@ -50,9 +54,9 @@ def bet_type(score):
 def consensus_label(score):
     if score >= 85:
         return "CONSENSO FORTE"
-    if score >= 75:
+    elif score >= 75:
         return "POSITIVO 75%+"
-    if score >= 65:
+    elif score >= 65:
         return "CONSENSO MÉDIO"
     return "SEM CONSENSO"
 
@@ -62,23 +66,27 @@ def pct(n, d):
 
 
 def parse_score(ev):
-    hs = ev.get("homeScore", {}) or {}
-    aw = ev.get("awayScore", {}) or {}
-    home_goals = hs.get("current")
-    away_goals = aw.get("current")
-    if home_goals is None or away_goals is None:
+    home_score = ev.get("homeScore", {}) or {}
+    away_score = ev.get("awayScore", {}) or {}
+
+    hg = home_score.get("current")
+    ag = away_score.get("current")
+
+    if hg is None or ag is None:
         return None, None
-    return int(home_goals), int(away_goals)
 
-
-def same_league(ev, league_name):
-    tournament = (ev.get("tournament", {}) or {}).get("name", "")
-    return str(tournament).strip().lower() == str(league_name).strip().lower()
+    return int(hg), int(ag)
 
 
 def is_finished(ev):
-    status = (ev.get("status", {}) or {}).get("type", "")
-    return status == "finished"
+    status = ev.get("status", {}) or {}
+    return status.get("type") == "finished"
+
+
+def same_league(ev, league_name):
+    tournament = ev.get("tournament", {}) or {}
+    name = tournament.get("name", "")
+    return str(name).strip().lower() == str(league_name).strip().lower()
 
 
 def fetch_sofascore_events(selected_date):
@@ -89,11 +97,12 @@ def fetch_sofascore_events(selected_date):
 
 def parse_sofascore_json(data):
     rows = []
+
     for ev in data.get("events", []):
         try:
             home = ev["homeTeam"]["name"]
             away = ev["awayTeam"]["name"]
-            tournament = ev["tournament"]["name"]
+            league = ev["tournament"]["name"]
             timestamp = ev.get("startTimestamp")
 
             hora = ""
@@ -106,14 +115,15 @@ def parse_sofascore_json(data):
 
             rows.append({
                 "Hora": hora,
-                "Liga": tournament,
+                "Liga": league,
                 "Jogo": f"{home} vs {away}",
                 "Casa": home,
                 "Fora": away,
                 "Casa ID": ev.get("homeTeam", {}).get("id", ""),
                 "Fora ID": ev.get("awayTeam", {}).get("id", ""),
-                "SofaScore ID": ev.get("id", ""),
+                "SofaScore ID": ev.get("id", "")
             })
+
         except Exception:
             continue
 
@@ -125,6 +135,7 @@ def parse_manual_games(text):
 
     for line in text.splitlines():
         line = line.strip()
+
         if not line:
             continue
 
@@ -153,7 +164,7 @@ def parse_manual_games(text):
             "Fora": fora.strip(),
             "Casa ID": "",
             "Fora ID": "",
-            "SofaScore ID": "",
+            "SofaScore ID": ""
         })
 
     return pd.DataFrame(rows)
@@ -168,8 +179,9 @@ def search_team_id(team_name):
 
         for item in data.get("results", []):
             entity = item.get("entity", {}) or {}
-            sport = (entity.get("sport", {}) or {}).get("name", "")
-            if sport.lower() == "football" and entity.get("id"):
+            sport = entity.get("sport", {}) or {}
+
+            if sport.get("name", "").lower() == "football" and entity.get("id"):
                 return entity.get("id", "")
 
     except Exception:
@@ -197,7 +209,7 @@ def fetch_recent_team_events(team_id, pages=4):
 
 
 def filter_team_matches(events, team_id, league_name, venue=None, limit=5):
-    out = []
+    matches = []
 
     for ev in events:
         if not is_finished(ev):
@@ -226,25 +238,27 @@ def filter_team_matches(events, team_id, league_name, venue=None, limit=5):
         if hg is None or ag is None:
             continue
 
-        out.append({
+        matches.append({
             "home": home.get("name", ""),
             "away": away.get("name", ""),
             "home_goals": hg,
             "away_goals": ag,
             "btts_yes": hg > 0 and ag > 0,
-            "btts_no": not (hg > 0 and ag > 0),
+            "btts_no": not (hg > 0 and ag > 0)
         })
 
-        if len(out) >= limit:
+        if len(matches) >= limit:
             break
 
-    return out
+    return matches
 
 
 def stats_from_matches(matches):
     total = len(matches)
+
     yes = sum(1 for m in matches if m["btts_yes"])
     no = total - yes
+
     gols = sum(m["home_goals"] + m["away_goals"] for m in matches)
 
     return {
@@ -253,7 +267,7 @@ def stats_from_matches(matches):
         "ambos_nao": no,
         "pct_sim": pct(yes, total),
         "pct_nao": pct(no, total),
-        "media_gols": round(gols / total, 2) if total else 0,
+        "media_gols": round(gols / total, 2) if total else 0
     }
 
 
@@ -283,7 +297,7 @@ def analyze_btts(row):
         s_home["jogos"],
         s_away["jogos"],
         s_home_venue["jogos"],
-        s_away_venue["jogos"],
+        s_away_venue["jogos"]
     )
 
     general_yes = round((s_home["pct_sim"] + s_away["pct_sim"]) / 2)
@@ -295,11 +309,11 @@ def analyze_btts(row):
     score_no = round((general_no * 0.45) + (venue_no * 0.55))
 
     if score_yes >= score_no:
-        pick = "Ambos marcam — SIM"
+        pick_real = "Ambos marcam — SIM"
         score = score_yes
         detalhe = f"Geral SIM {general_yes}% | Casa/Fora SIM {venue_yes}%"
     else:
-        pick = "Ambos marcam — NÃO"
+        pick_real = "Ambos marcam — NÃO"
         score = score_no
         detalhe = f"Geral NÃO {general_no}% | Casa/Fora NÃO {venue_no}%"
 
@@ -308,12 +322,13 @@ def analyze_btts(row):
         detalhe += " | Amostra baixa"
 
     positivo = "SIM" if score >= BTTS_THRESHOLD else "NÃO"
+    pick = pick_real if positivo == "SIM" else "Sem entrada"
 
     return {
         "Hora": row["Hora"],
         "Jogo": row["Jogo"],
         "Liga": liga,
-        "Pick": pick if positivo == "SIM" else "Sem entrada",
+        "Pick": pick,
         "Probabilidade": f"{score}%",
         "Força": stars(score),
         "Tipo": bet_type(score),
@@ -324,33 +339,64 @@ def analyze_btts(row):
         "Últ.5 Visitante Liga BTTS SIM": f'{s_away["pct_sim"]}% ({s_away["ambos_sim"]}/{s_away["jogos"]})',
         "Mandante em casa BTTS SIM": f'{s_home_venue["pct_sim"]}% ({s_home_venue["ambos_sim"]}/{s_home_venue["jogos"]})',
         "Visitante fora BTTS SIM": f'{s_away_venue["pct_sim"]}% ({s_away_venue["ambos_sim"]}/{s_away_venue["jogos"]})',
-        "Detalhe": detalhe,
+        "Detalhe": detalhe
     }
 
 
-def to_excel(dfs):
-    output = BytesIO()
+def to_excel_or_zip(dfs):
+    """
+    Tenta gerar Excel com openpyxl.
+    Se openpyxl não estiver instalado, gera ZIP com CSVs.
+    Assim o app não quebra no Streamlit Cloud.
+    """
 
-    with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        for sheet_name, df in dfs.items():
-            df.to_excel(writer, sheet_name=sheet_name, index=False)
-            ws = writer.sheets[sheet_name]
+    try:
+        import openpyxl
 
-            for col_cells in ws.columns:
-                letter = col_cells[0].column_letter
-                max_len = max(
-                    len(str(c.value)) if c.value is not None else 0
-                    for c in col_cells
-                )
-                ws.column_dimensions[letter].width = min(max_len + 2, 50)
+        output = BytesIO()
 
-    return output.getvalue()
+        with pd.ExcelWriter(output, engine="openpyxl") as writer:
+            for sheet_name, df in dfs.items():
+                safe_sheet = sheet_name[:31]
+                df.to_excel(writer, sheet_name=safe_sheet, index=False)
+
+                ws = writer.sheets[safe_sheet]
+
+                for col_cells in ws.columns:
+                    letter = col_cells[0].column_letter
+                    max_len = max(
+                        len(str(c.value)) if c.value is not None else 0
+                        for c in col_cells
+                    )
+                    ws.column_dimensions[letter].width = min(max_len + 2, 50)
+
+        return {
+            "data": output.getvalue(),
+            "file_name": "scanner_x10_btts.xlsx",
+            "mime": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            "tipo": "excel"
+        }
+
+    except ModuleNotFoundError:
+        output = BytesIO()
+
+        with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as zf:
+            for sheet_name, df in dfs.items():
+                csv_data = df.to_csv(index=False, sep=";", encoding="utf-8-sig")
+                zf.writestr(f"{sheet_name}.csv", csv_data)
+
+        return {
+            "data": output.getvalue(),
+            "file_name": "scanner_x10_btts_csv.zip",
+            "mime": "application/zip",
+            "tipo": "zip_csv"
+        }
 
 
 st.title("⚽ Scanner X10 — Ambos Marcam / Ambos Não Marcam")
 
 st.markdown("""
-Estudo específico para **BTTS**:
+Estudo específico para **Ambos Marcam SIM/NÃO**:
 
 - Últimos 5 jogos de cada time na liga
 - Últimos 5 jogos do mandante em casa na liga
@@ -363,9 +409,9 @@ modo = st.radio(
     [
         "SofaScore automático",
         "Colar JSON do SofaScore",
-        "Colar lista manual",
+        "Colar lista manual"
     ],
-    horizontal=True,
+    horizontal=True
 )
 
 df_games = pd.DataFrame()
@@ -401,7 +447,7 @@ else:
         height=300,
         value="""15:00\tPremier League\tArsenal vs Chelsea
 16:00\tSerie A\tInter vs Lazio
-21:30\tBrazilian Serie A\tFlamengo vs Palmeiras""",
+21:30\tBrazilian Serie A\tFlamengo vs Palmeiras"""
     )
 
     if st.button("📋 Ler lista manual"):
@@ -423,11 +469,13 @@ if not df_games.empty:
             btts = pd.DataFrame([analyze_btts(row) for _, row in df_games.iterrows()])
 
         btts_filtrado = btts[btts["Score"] >= min_score].sort_values(
-            "Score", ascending=False
+            "Score",
+            ascending=False
         )
 
         positivos = btts[btts["Positivo 75%+"] == "SIM"].sort_values(
-            "Score", ascending=False
+            "Score",
+            ascending=False
         )
 
         monitorar = btts[
@@ -445,7 +493,7 @@ if not df_games.empty:
             "Consenso",
             "Positivo 75%+",
             "Score",
-            "Detalhe",
+            "Detalhe"
         ]
 
         detail_cols = [
@@ -458,14 +506,14 @@ if not df_games.empty:
             "Últ.5 Visitante Liga BTTS SIM",
             "Mandante em casa BTTS SIM",
             "Visitante fora BTTS SIM",
-            "Detalhe",
+            "Detalhe"
         ]
 
         tab1, tab2, tab3, tab4 = st.tabs([
             "🎯 Entradas 75%+",
             "📊 Todos os estudos",
             "🔎 Detalhamento",
-            "📥 Excel",
+            "📥 Download"
         ])
 
         with tab1:
@@ -483,19 +531,25 @@ if not df_games.empty:
             st.markdown("### 🔎 Base do cálculo")
             st.dataframe(btts[detail_cols], use_container_width=True)
 
-        excel_file = to_excel({
+        arquivo = to_excel_or_zip({
             "BTTS_75_positivo": positivos[display_cols],
             "Todos_filtrados": btts_filtrado[display_cols],
             "Detalhamento": btts[detail_cols],
-            "Monitorar": monitorar[display_cols],
+            "Monitorar": monitorar[display_cols]
         })
 
         with tab4:
+            if arquivo["tipo"] == "zip_csv":
+                st.warning(
+                    "O pacote openpyxl não está instalado. "
+                    "Por isso, o download foi gerado em CSV compactado."
+                )
+
             st.download_button(
-                label="📥 Baixar Excel",
-                data=excel_file,
-                file_name="scanner_x10_btts.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                label="📥 Baixar resultado",
+                data=arquivo["data"],
+                file_name=arquivo["file_name"],
+                mime=arquivo["mime"]
             )
 
 else:
