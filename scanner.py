@@ -30,15 +30,10 @@ def normalize_text(text):
     return text
 
 
-def safe_get(url, timeout=20):
-    """
-    Tenta direto.
-    Se der 403, tenta via proxy público.
-    """
+def safe_get(url, timeout=8):
     urls = [
         url,
         "https://api.allorigins.win/raw?url=" + quote(url, safe=""),
-        "https://api.codetabs.com/v1/proxy?quest=" + quote(url, safe=":/?=&"),
     ]
 
     last_error = None
@@ -107,7 +102,6 @@ def parse_score(ev):
 
     if hg is None:
         hg = hs.get("normaltime")
-
     if ag is None:
         ag = aw.get("normaltime")
 
@@ -243,8 +237,8 @@ def enrich_ids_from_json_list(df_manual, df_json):
     return enriched
 
 
-@st.cache_data(ttl=3600, show_spinner=False)
-def fetch_recent_team_events(team_id):
+@st.cache_data(ttl=7200, show_spinner=False)
+def fetch_recent_team_events(team_id, pages=2):
     events = []
 
     if not team_id:
@@ -252,11 +246,11 @@ def fetch_recent_team_events(team_id):
 
     erros = []
 
-    for page in range(0, 8):
+    for page in range(0, pages):
         url = f"https://www.sofascore.com/api/v1/team/{team_id}/events/last/{page}"
 
         try:
-            data = safe_get(url)
+            data = safe_get(url, timeout=8)
             evs = data.get("events", [])
 
             if evs:
@@ -278,7 +272,7 @@ def fetch_recent_team_events(team_id):
         return final_events, "OK"
 
     if erros:
-        return [], "Erro histórico: " + " | ".join(erros[:2])
+        return [], "Erro histórico: " + " | ".join(erros[:1])
 
     return [], "Sem eventos retornados"
 
@@ -339,8 +333,8 @@ def analyze_btts(row):
     home_id = str(row.get("Casa ID", ""))
     away_id = str(row.get("Fora ID", ""))
 
-    home_events, home_status = fetch_recent_team_events(home_id)
-    away_events, away_status = fetch_recent_team_events(away_id)
+    home_events, home_status = fetch_recent_team_events(home_id, pages=2)
+    away_events, away_status = fetch_recent_team_events(away_id, pages=2)
 
     home_last5 = filter_matches(home_events, home_id, None, 5)
     away_last5 = filter_matches(away_events, away_id, None, 5)
@@ -444,7 +438,7 @@ st.markdown("""
 4. Cole somente os jogos desejados.
 5. Rode o scanner.
 
-Esta versão tenta buscar o histórico dos times direto e também por proxy anti-403.
+⚡ Esta versão está otimizada para velocidade.
 """)
 
 json_text = st.text_area(
