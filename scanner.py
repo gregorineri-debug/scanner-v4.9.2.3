@@ -6,6 +6,7 @@ import json
 import zipfile
 import unicodedata
 from io import BytesIO
+from urllib.parse import quote
 
 st.set_page_config(page_title="Scanner X10 - Ambos Marcam", layout="wide")
 
@@ -13,7 +14,7 @@ BTTS_THRESHOLD = 75
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0",
-    "Accept": "application/json",
+    "Accept": "application/json,text/plain,*/*",
     "Referer": "https://www.sofascore.com/",
     "Origin": "https://www.sofascore.com",
 }
@@ -30,12 +31,31 @@ def normalize_text(text):
 
 
 def safe_get(url, timeout=20):
-    r = requests.get(url, headers=HEADERS, timeout=timeout)
+    """
+    Tenta direto.
+    Se der 403, tenta via proxy público.
+    """
+    urls = [
+        url,
+        "https://api.allorigins.win/raw?url=" + quote(url, safe=""),
+        "https://api.codetabs.com/v1/proxy?quest=" + quote(url, safe=":/?=&"),
+    ]
 
-    if r.status_code != 200:
-        raise Exception(f"Status {r.status_code}")
+    last_error = None
 
-    return r.json()
+    for u in urls:
+        try:
+            r = requests.get(u, headers=HEADERS, timeout=timeout)
+
+            if r.status_code == 200:
+                return r.json()
+
+            last_error = f"Status {r.status_code}"
+
+        except Exception as e:
+            last_error = str(e)
+
+    raise Exception(last_error or "Falha ao buscar dados")
 
 
 def pct(n, d):
@@ -83,11 +103,10 @@ def parse_score(ev):
     aw = ev.get("awayScore", {}) or {}
 
     hg = hs.get("current")
+    ag = aw.get("current")
 
     if hg is None:
         hg = hs.get("normaltime")
-
-    ag = aw.get("current")
 
     if ag is None:
         ag = aw.get("normaltime")
@@ -99,19 +118,15 @@ def parse_score(ev):
 
 
 def parse_sofascore_json(data):
-
     rows = []
 
     for ev in data.get("events", []):
-
         try:
-
             home = ev["homeTeam"]["name"]
             away = ev["awayTeam"]["name"]
             league = ev["tournament"]["name"]
 
             timestamp = ev.get("startTimestamp")
-
             hora = ""
 
             if timestamp:
@@ -138,11 +153,9 @@ def parse_sofascore_json(data):
 
 
 def parse_manual_games(text):
-
     rows = []
 
     for line in text.splitlines():
-
         line = line.strip()
 
         if not line:
@@ -151,17 +164,11 @@ def parse_manual_games(text):
         parts = re.split(r"\t+", line)
 
         if len(parts) >= 3:
-
             hora = parts[0].strip()
             liga = parts[1].strip()
             jogo = parts[2].strip()
-
         else:
-
-            match = re.match(
-                r"^(\d{1,2}:\d{2})\s+(.+?)\s{2,}(.+)$",
-                line
-            )
+            match = re.match(r"^(\d{1,2}:\d{2})\s+(.+?)\s{2,}(.+)$", line)
 
             if not match:
                 continue
@@ -187,7 +194,6 @@ def parse_manual_games(text):
 
 
 def name_score(a, b):
-
     a = normalize_text(a)
     b = normalize_text(b)
 
@@ -206,17 +212,13 @@ def name_score(a, b):
     if not aw or not bw:
         return 0
 
-    return int(
-        (len(aw & bw) / max(len(aw), len(bw))) * 70
-    )
+    return int((len(aw & bw) / max(len(aw), len(bw))) * 70)
 
 
 def enrich_ids_from_json_list(df_manual, df_json):
-
     enriched = df_manual.copy()
 
     for idx, row in enriched.iterrows():
-
         casa = row["Casa"]
         fora = row["Fora"]
 
@@ -224,26 +226,17 @@ def enrich_ids_from_json_list(df_manual, df_json):
         best_score = 0
 
         for _, jrow in df_json.iterrows():
-
-            score = (
-                name_score(casa, jrow["Casa"])
-                +
-                name_score(fora, jrow["Fora"])
-            )
+            score = name_score(casa, jrow["Casa"]) + name_score(fora, jrow["Fora"])
 
             if score > best_score:
                 best_score = score
                 found = jrow
 
         if found is not None and best_score >= 90:
-
             enriched.at[idx, "Casa ID"] = str(found["Casa ID"])
             enriched.at[idx, "Fora ID"] = str(found["Fora ID"])
-
             enriched.at[idx, "Liga"] = found["Liga"]
-
             enriched.at[idx, "Jogo"] = found["Jogo"]
-
             enriched.at[idx, "Casa"] = found["Casa"]
             enriched.at[idx, "Fora"] = found["Fora"]
 
@@ -252,44 +245,48 @@ def enrich_ids_from_json_list(df_manual, df_json):
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def fetch_recent_team_events(team_id):
-
     events = []
 
     if not team_id:
-        return events
+        return [], "Sem ID"
+
+    erros = []
 
     for page in range(0, 8):
-
-        url = (
-            f"https://www.sofascore.com/api/v1/team/"
-            f"{team_id}/events/last/{page}"
-        )
+        url = f"https://www.sofascore.com/api/v1/team/{team_id}/events/last/{page}"
 
         try:
-
             data = safe_get(url)
+            evs = data.get("events", [])
 
-            events.extend(data.get("events", []))
+            if evs:
+                events.extend(evs)
 
-        except Exception:
+        except Exception as e:
+            erros.append(str(e))
             continue
 
     unique = {}
 
     for ev in events:
-
         if ev.get("id"):
             unique[ev["id"]] = ev
 
-    return list(unique.values())
+    final_events = list(unique.values())
+
+    if final_events:
+        return final_events, "OK"
+
+    if erros:
+        return [], "Erro histórico: " + " | ".join(erros[:2])
+
+    return [], "Sem eventos retornados"
 
 
 def filter_matches(events, team_id, venue=None, limit=5):
-
     matches = []
 
     for ev in events:
-
         if not is_finished(ev):
             continue
 
@@ -325,14 +322,8 @@ def filter_matches(events, team_id, venue=None, limit=5):
 
 
 def stats_from_matches(matches):
-
     total = len(matches)
-
-    yes = sum(
-        1 for m in matches
-        if m["btts_yes"]
-    )
-
+    yes = sum(1 for m in matches if m["btts_yes"])
     no = total - yes
 
     return {
@@ -345,128 +336,50 @@ def stats_from_matches(matches):
 
 
 def analyze_btts(row):
-
     home_id = str(row.get("Casa ID", ""))
     away_id = str(row.get("Fora ID", ""))
 
-    home_events = fetch_recent_team_events(home_id)
-    away_events = fetch_recent_team_events(away_id)
+    home_events, home_status = fetch_recent_team_events(home_id)
+    away_events, away_status = fetch_recent_team_events(away_id)
 
-    home_last5 = filter_matches(
-        home_events,
-        home_id,
-        None,
-        5
-    )
+    home_last5 = filter_matches(home_events, home_id, None, 5)
+    away_last5 = filter_matches(away_events, away_id, None, 5)
 
-    away_last5 = filter_matches(
-        away_events,
-        away_id,
-        None,
-        5
-    )
-
-    home_home5 = filter_matches(
-        home_events,
-        home_id,
-        "home",
-        5
-    )
-
-    away_away5 = filter_matches(
-        away_events,
-        away_id,
-        "away",
-        5
-    )
+    home_home5 = filter_matches(home_events, home_id, "home", 5)
+    away_away5 = filter_matches(away_events, away_id, "away", 5)
 
     s_home = stats_from_matches(home_last5)
     s_away = stats_from_matches(away_last5)
-
     s_home_casa = stats_from_matches(home_home5)
     s_away_fora = stats_from_matches(away_away5)
 
-    geral_sim = round(
-        (
-            s_home["pct_sim"]
-            +
-            s_away["pct_sim"]
-        ) / 2
-    )
+    geral_sim = round((s_home["pct_sim"] + s_away["pct_sim"]) / 2)
+    casa_fora_sim = round((s_home_casa["pct_sim"] + s_away_fora["pct_sim"]) / 2)
+    score_sim = round((geral_sim * 0.45) + (casa_fora_sim * 0.55))
 
-    casa_fora_sim = round(
-        (
-            s_home_casa["pct_sim"]
-            +
-            s_away_fora["pct_sim"]
-        ) / 2
-    )
-
-    score_sim = round(
-        (geral_sim * 0.45)
-        +
-        (casa_fora_sim * 0.55)
-    )
-
-    geral_nao = round(
-        (
-            s_home["pct_nao"]
-            +
-            s_away["pct_nao"]
-        ) / 2
-    )
-
-    casa_fora_nao = round(
-        (
-            s_home_casa["pct_nao"]
-            +
-            s_away_fora["pct_nao"]
-        ) / 2
-    )
-
-    score_nao = round(
-        (geral_nao * 0.45)
-        +
-        (casa_fora_nao * 0.55)
-    )
+    geral_nao = round((s_home["pct_nao"] + s_away["pct_nao"]) / 2)
+    casa_fora_nao = round((s_home_casa["pct_nao"] + s_away_fora["pct_nao"]) / 2)
+    score_nao = round((geral_nao * 0.45) + (casa_fora_nao * 0.55))
 
     if score_sim >= score_nao:
-
         pick_real = "Ambos marcam — SIM"
         score = score_sim
-
-        detalhe = (
-            f"Geral SIM {geral_sim}% | "
-            f"Casa/Fora SIM {casa_fora_sim}%"
-        )
-
+        detalhe = f"Geral SIM {geral_sim}% | Casa/Fora SIM {casa_fora_sim}%"
     else:
-
         pick_real = "Ambos marcam — NÃO"
         score = score_nao
+        detalhe = f"Geral NÃO {geral_nao}% | Casa/Fora NÃO {casa_fora_nao}%"
 
-        detalhe = (
-            f"Geral NÃO {geral_nao}% | "
-            f"Casa/Fora NÃO {casa_fora_nao}%"
-        )
-
-    positivo = (
-        "SIM"
-        if score >= BTTS_THRESHOLD
-        else "NÃO"
-    )
-
-    pick = (
-        pick_real
-        if positivo == "SIM"
-        else "Sem entrada"
-    )
+    positivo = "SIM" if score >= BTTS_THRESHOLD else "NÃO"
+    pick = pick_real if positivo == "SIM" else "Sem entrada"
 
     diagnostico = (
         f"Casa ID: {home_id or 'NÃO ACHOU'} | "
         f"Fora ID: {away_id or 'NÃO ACHOU'} | "
         f"Eventos casa: {len(home_events)} | "
-        f"Eventos fora: {len(away_events)}"
+        f"Eventos fora: {len(away_events)} | "
+        f"Status casa: {home_status} | "
+        f"Status fora: {away_status}"
     )
 
     return {
@@ -482,76 +395,36 @@ def analyze_btts(row):
         "Score": score,
         "Detalhe": detalhe,
         "Diagnóstico": diagnostico,
-        "Mandante Geral SIM":
-            f'{s_home["pct_sim"]}% '
-            f'({s_home["sim"]}/{s_home["jogos"]})',
-
-        "Visitante Geral SIM":
-            f'{s_away["pct_sim"]}% '
-            f'({s_away["sim"]}/{s_away["jogos"]})',
-
-        "Mandante Casa SIM":
-            f'{s_home_casa["pct_sim"]}% '
-            f'({s_home_casa["sim"]}/{s_home_casa["jogos"]})',
-
-        "Visitante Fora SIM":
-            f'{s_away_fora["pct_sim"]}% '
-            f'({s_away_fora["sim"]}/{s_away_fora["jogos"]})',
+        "Mandante Geral SIM": f'{s_home["pct_sim"]}% ({s_home["sim"]}/{s_home["jogos"]})',
+        "Visitante Geral SIM": f'{s_away["pct_sim"]}% ({s_away["sim"]}/{s_away["jogos"]})',
+        "Mandante Casa SIM": f'{s_home_casa["pct_sim"]}% ({s_home_casa["sim"]}/{s_home_casa["jogos"]})',
+        "Visitante Fora SIM": f'{s_away_fora["pct_sim"]}% ({s_away_fora["sim"]}/{s_away_fora["jogos"]})',
     }
 
 
 def to_excel_or_zip(dfs):
-
     try:
-
         import openpyxl
 
         output = BytesIO()
 
-        with pd.ExcelWriter(
-            output,
-            engine="openpyxl"
-        ) as writer:
-
+        with pd.ExcelWriter(output, engine="openpyxl") as writer:
             for sheet_name, df in dfs.items():
-
-                df.to_excel(
-                    writer,
-                    sheet_name=sheet_name[:31],
-                    index=False
-                )
+                df.to_excel(writer, sheet_name=sheet_name[:31], index=False)
 
         return {
             "data": output.getvalue(),
             "file_name": "scanner_x10_btts.xlsx",
-            "mime":
-                "application/"
-                "vnd.openxmlformats-"
-                "officedocument.spreadsheetml.sheet",
+            "mime": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         }
 
     except ModuleNotFoundError:
-
         output = BytesIO()
 
-        with zipfile.ZipFile(
-            output,
-            "w",
-            zipfile.ZIP_DEFLATED
-        ) as zf:
-
+        with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as zf:
             for sheet_name, df in dfs.items():
-
-                csv_data = df.to_csv(
-                    index=False,
-                    sep=";",
-                    encoding="utf-8-sig"
-                )
-
-                zf.writestr(
-                    f"{sheet_name}.csv",
-                    csv_data
-                )
+                csv_data = df.to_csv(index=False, sep=";", encoding="utf-8-sig")
+                zf.writestr(f"{sheet_name}.csv", csv_data)
 
         return {
             "data": output.getvalue(),
@@ -560,18 +433,18 @@ def to_excel_or_zip(dfs):
         }
 
 
-st.title(
-    "⚽ Scanner X10 — Ambos Marcam / Ambos Não Marcam"
-)
+st.title("⚽ Scanner X10 — Ambos Marcam / Ambos Não Marcam")
 
 st.markdown("""
 ### Como usar
 
 1. Abra o endpoint do SofaScore no navegador.
-2. Copie TODO o JSON bruto.
+2. Copie TODO o JSON bruto dos jogos do dia.
 3. Cole abaixo.
 4. Cole somente os jogos desejados.
 5. Rode o scanner.
+
+Esta versão tenta buscar o histórico dos times direto e também por proxy anti-403.
 """)
 
 json_text = st.text_area(
@@ -588,165 +461,77 @@ manual_filter_text = st.text_area(
 16:00\tPremier League\tAston Villa vs Liverpool FC"""
 )
 
-
-if st.button(
-    "📥 Ler JSON + filtrar jogos escolhidos"
-):
-
+if st.button("📥 Ler JSON + filtrar jogos escolhidos"):
     try:
-
         json_text = json_text.strip()
 
         if json_text.startswith("http"):
-
             raise Exception(
-                "Não cole o link. "
-                "Abra o link no navegador, "
-                "copie o JSON completo "
-                "e cole aqui."
+                "Não cole o link. Abra o link no navegador, copie o JSON completo e cole aqui."
             )
 
         if not json_text:
-
-            raise Exception(
-                "Campo JSON vazio."
-            )
+            raise Exception("Campo JSON vazio.")
 
         if not json_text.startswith("{"):
-
-            raise Exception(
-                "JSON inválido. "
-                "Precisa começar com {"
-            )
+            raise Exception("JSON inválido. Precisa começar com {")
 
         data = json.loads(json_text)
 
         df_json = parse_sofascore_json(data)
-
-        df_manual = parse_manual_games(
-            manual_filter_text
-        )
-
-        df_games = enrich_ids_from_json_list(
-            df_manual,
-            df_json
-        )
+        df_manual = parse_manual_games(manual_filter_text)
+        df_games = enrich_ids_from_json_list(df_manual, df_json)
 
         st.session_state["df_games"] = df_games
 
         achados = (
-            (
-                df_games["Casa ID"]
-                .astype(str) != ""
-            )
-            &
-            (
-                df_games["Fora ID"]
-                .astype(str) != ""
-            )
+            (df_games["Casa ID"].astype(str) != "") &
+            (df_games["Fora ID"].astype(str) != "")
         ).sum()
 
-        st.success(
-            f"{achados}/{len(df_games)} "
-            f"jogos encontrados no JSON."
-        )
+        st.success(f"{achados}/{len(df_games)} jogos encontrados no JSON.")
 
     except Exception as e:
-
-        st.error(
-            f"Erro ao ler JSON: {e}"
-        )
+        st.error(f"Erro ao ler JSON: {e}")
 
 
 if "df_games" in st.session_state:
-
     df_games = st.session_state["df_games"]
 
     st.subheader("Jogos carregados")
 
     st.dataframe(
-        df_games[
-            [
-                "Hora",
-                "Liga",
-                "Jogo",
-                "Casa ID",
-                "Fora ID",
-            ]
-        ],
+        df_games[["Hora", "Liga", "Jogo", "Casa ID", "Fora ID"]],
         use_container_width=True
     )
 
-    min_score = st.slider(
-        "Score mínimo",
-        0,
-        100,
-        75
-    )
+    min_score = st.slider("Score mínimo", 0, 100, 75)
 
-    if st.button(
-        "🚀 Rodar Scanner X10 BTTS"
-    ):
+    if st.button("🚀 Rodar Scanner X10 BTTS"):
+        with st.spinner("Buscando últimos jogos..."):
+            btts = pd.DataFrame([analyze_btts(row) for _, row in df_games.iterrows()])
 
-        with st.spinner(
-            "Buscando últimos jogos..."
-        ):
-
-            btts = pd.DataFrame(
-                [
-                    analyze_btts(row)
-                    for _, row
-                    in df_games.iterrows()
-                ]
-            )
-
-        positivos = btts[
-            btts["Score"] >= 75
-        ].sort_values(
-            "Score",
-            ascending=False
-        )
+        positivos = btts[btts["Score"] >= 75].sort_values("Score", ascending=False)
 
         monitorar = btts[
-            (
-                btts["Score"] >= 65
-            )
-            &
-            (
-                btts["Score"] < 75
-            )
-        ].sort_values(
-            "Score",
-            ascending=False
-        )
+            (btts["Score"] >= 65) &
+            (btts["Score"] < 75)
+        ].sort_values("Score", ascending=False)
 
-        filtrados = btts[
-            btts["Score"] >= min_score
-        ].sort_values(
-            "Score",
-            ascending=False
-        )
+        filtrados = btts[btts["Score"] >= min_score].sort_values("Score", ascending=False)
 
         display_cols = [
-            "Hora",
-            "Jogo",
-            "Liga",
-            "Pick",
-            "Probabilidade",
-            "Força",
-            "Tipo",
-            "Consenso",
-            "Positivo 75%+",
-            "Score",
-            "Detalhe",
+            "Hora", "Jogo", "Liga", "Pick", "Probabilidade",
+            "Força", "Tipo", "Consenso", "Positivo 75%+",
+            "Score", "Detalhe",
         ]
 
         detail_cols = [
-            "Hora",
-            "Jogo",
-            "Liga",
-            "Pick",
-            "Score",
+            "Hora", "Jogo", "Liga", "Pick", "Score",
+            "Mandante Geral SIM",
+            "Visitante Geral SIM",
+            "Mandante Casa SIM",
+            "Visitante Fora SIM",
             "Diagnóstico",
         ]
 
@@ -758,64 +543,29 @@ if "df_games" in st.session_state:
         ])
 
         with tab1:
-
-            st.dataframe(
-                positivos[display_cols],
-                use_container_width=True
-            )
+            st.dataframe(positivos[display_cols], use_container_width=True)
 
         with tab2:
+            st.markdown("### Jogos acima do filtro")
+            st.dataframe(filtrados[display_cols], use_container_width=True)
 
-            st.markdown(
-                "### Jogos acima do filtro"
-            )
+            st.markdown("### Monitorar")
+            st.dataframe(monitorar[display_cols], use_container_width=True)
 
-            st.dataframe(
-                filtrados[display_cols],
-                use_container_width=True
-            )
-
-            st.markdown(
-                "### Monitorar"
-            )
-
-            st.dataframe(
-                monitorar[display_cols],
-                use_container_width=True
-            )
-
-            st.markdown(
-                "### Todos"
-            )
-
-            st.dataframe(
-                btts[display_cols],
-                use_container_width=True
-            )
+            st.markdown("### Todos")
+            st.dataframe(btts[display_cols], use_container_width=True)
 
         with tab3:
-
-            st.dataframe(
-                btts[detail_cols],
-                use_container_width=True
-            )
+            st.dataframe(btts[detail_cols], use_container_width=True)
 
         arquivo = to_excel_or_zip({
-            "BTTS_75":
-                positivos[display_cols],
-
-            "Todos":
-                btts[display_cols],
-
-            "Diagnostico":
-                btts[detail_cols],
-
-            "Monitorar":
-                monitorar[display_cols],
+            "BTTS_75": positivos[display_cols],
+            "Todos": btts[display_cols],
+            "Diagnostico": btts[detail_cols],
+            "Monitorar": monitorar[display_cols],
         })
 
         with tab4:
-
             st.download_button(
                 label="📥 Baixar resultado",
                 data=arquivo["data"],
@@ -824,7 +574,4 @@ if "df_games" in st.session_state:
             )
 
 else:
-
-    st.info(
-        "Cole o JSON bruto e carregue os jogos."
-    )
+    st.info("Cole o JSON bruto e carregue os jogos.")
