@@ -1,61 +1,126 @@
 import streamlit as st
 import pandas as pd
+import requests
 import re
+import json
 from io import BytesIO
+from datetime import date
 
-st.set_page_config(
-    page_title="Scanner X10 - SCEM + Consenso PRO",
-    layout="wide"
-)
+st.set_page_config(page_title="Scanner X10 - Ambos Marcam", layout="wide")
 
-# =========================================================
-# CONFIGURAÇÕES
-# =========================================================
-
-LEAGUE_PROFILES = {
-    "Champions League": {"goals": 4, "corners": 4, "cards": 3, "level": 5},
-    "Libertadores": {"goals": 2, "corners": 3, "cards": 5, "level": 4},
-    "Sudamericana": {"goals": 2, "corners": 3, "cards": 5, "level": 3},
-    "Saudi Pro League": {"goals": 4, "corners": 3, "cards": 3, "level": 3},
-    "Eredivisie": {"goals": 5, "corners": 4, "cards": 2, "level": 3},
-    "Championship": {"goals": 3, "corners": 5, "cards": 3, "level": 4},
-    "Egito": {"goals": 2, "corners": 2, "cards": 3, "level": 2},
-    "Portugal 2": {"goals": 2, "corners": 3, "cards": 4, "level": 2},
-    "Primera Nacional": {"goals": 2, "corners": 2, "cards": 5, "level": 2},
+HEADERS = {
+    "User-Agent": "Mozilla/5.0",
+    "Accept": "application/json",
+    "Referer": "https://www.sofascore.com/",
+    "Origin": "https://www.sofascore.com",
 }
 
-STRONG_TEAMS = [
-    "Al-Hilal", "Bayern", "Paris Saint-Germain", "PSG",
-    "Botafogo", "Cruzeiro", "Boca Juniors", "São Paulo",
-    "Southampton", "Ipswich", "Rosario Central",
-    "Sporting Cristal", "Junior", "Santos", "LDU",
-    "Independiente del Valle", "Al-Shabab"
-]
-
-DEFENSIVE_TEAMS = [
-    "Boca", "San Lorenzo", "Libertad", "LDU",
-    "Independiente del Valle", "Torreense",
-    "Feirense", "Almirante Brown"
-]
-
-AGGRESSIVE_TEAMS = [
-    "Boca", "Cruzeiro", "San Lorenzo", "Santos",
-    "Lanús", "LDU", "Independiente", "Botafogo",
-    "Millonarios", "São Paulo", "Tolima"
-]
-
-HIGH_CORNERS_TEAMS = [
-    "Al-Hilal", "PSG", "Paris Saint-Germain", "Bayern",
-    "Southampton", "Ipswich", "Botafogo", "Cruzeiro",
-    "Roda", "Waalwijk"
-]
+BTTS_THRESHOLD = 75
 
 
-# =========================================================
-# FUNÇÕES AUXILIARES
-# =========================================================
+def safe_get(url, timeout=20):
+    r = requests.get(url, headers=HEADERS, timeout=timeout)
+    if r.status_code != 200:
+        raise Exception(f"Status {r.status_code} em {url}")
+    return r.json()
 
-def parse_games(text):
+
+def stars(score):
+    if score >= 90:
+        return "⭐⭐⭐⭐⭐"
+    if score >= 80:
+        return "⭐⭐⭐⭐"
+    if score >= 75:
+        return "⭐⭐⭐"
+    if score >= 65:
+        return "⭐⭐"
+    return "⭐"
+
+
+def bet_type(score):
+    if score >= 85:
+        return "CONSERVADOR"
+    if score >= 75:
+        return "POSITIVO"
+    if score >= 65:
+        return "MONITORAR"
+    return "EVITAR"
+
+
+def consensus_label(score):
+    if score >= 85:
+        return "CONSENSO FORTE"
+    if score >= 75:
+        return "POSITIVO 75%+"
+    if score >= 65:
+        return "CONSENSO MÉDIO"
+    return "SEM CONSENSO"
+
+
+def pct(n, d):
+    return int(round((n / d) * 100)) if d else 0
+
+
+def parse_score(ev):
+    hs = ev.get("homeScore", {}) or {}
+    aw = ev.get("awayScore", {}) or {}
+    home_goals = hs.get("current")
+    away_goals = aw.get("current")
+    if home_goals is None or away_goals is None:
+        return None, None
+    return int(home_goals), int(away_goals)
+
+
+def same_league(ev, league_name):
+    tournament = (ev.get("tournament", {}) or {}).get("name", "")
+    return str(tournament).strip().lower() == str(league_name).strip().lower()
+
+
+def is_finished(ev):
+    status = (ev.get("status", {}) or {}).get("type", "")
+    return status == "finished"
+
+
+def fetch_sofascore_events(selected_date):
+    url = f"https://www.sofascore.com/api/v1/sport/football/scheduled-events/{selected_date}"
+    data = safe_get(url)
+    return parse_sofascore_json(data)
+
+
+def parse_sofascore_json(data):
+    rows = []
+    for ev in data.get("events", []):
+        try:
+            home = ev["homeTeam"]["name"]
+            away = ev["awayTeam"]["name"]
+            tournament = ev["tournament"]["name"]
+            timestamp = ev.get("startTimestamp")
+
+            hora = ""
+            if timestamp:
+                hora = (
+                    pd.to_datetime(timestamp, unit="s", utc=True)
+                    .tz_convert("America/Sao_Paulo")
+                    .strftime("%H:%M")
+                )
+
+            rows.append({
+                "Hora": hora,
+                "Liga": tournament,
+                "Jogo": f"{home} vs {away}",
+                "Casa": home,
+                "Fora": away,
+                "Casa ID": ev.get("homeTeam", {}).get("id", ""),
+                "Fora ID": ev.get("awayTeam", {}).get("id", ""),
+                "SofaScore ID": ev.get("id", ""),
+            })
+        except Exception:
+            continue
+
+    return pd.DataFrame(rows)
+
+
+def parse_manual_games(text):
     rows = []
 
     for line in text.splitlines():
@@ -85,257 +150,183 @@ def parse_games(text):
             "Liga": liga,
             "Jogo": jogo,
             "Casa": casa.strip(),
-            "Fora": fora.strip()
+            "Fora": fora.strip(),
+            "Casa ID": "",
+            "Fora ID": "",
+            "SofaScore ID": "",
         })
 
     return pd.DataFrame(rows)
 
 
-def league_profile(liga):
-    return LEAGUE_PROFILES.get(
-        liga,
-        {"goals": 3, "corners": 3, "cards": 3, "level": 2}
+@st.cache_data(ttl=3600, show_spinner=False)
+def search_team_id(team_name):
+    try:
+        q = requests.utils.quote(str(team_name))
+        url = f"https://www.sofascore.com/api/v1/search/all?q={q}"
+        data = safe_get(url)
+
+        for item in data.get("results", []):
+            entity = item.get("entity", {}) or {}
+            sport = (entity.get("sport", {}) or {}).get("name", "")
+            if sport.lower() == "football" and entity.get("id"):
+                return entity.get("id", "")
+
+    except Exception:
+        return ""
+
+    return ""
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def fetch_recent_team_events(team_id, pages=4):
+    events = []
+
+    if not team_id:
+        return events
+
+    for page in range(pages):
+        try:
+            url = f"https://www.sofascore.com/api/v1/team/{team_id}/events/last/{page}"
+            data = safe_get(url)
+            events.extend(data.get("events", []))
+        except Exception:
+            break
+
+    return events
+
+
+def filter_team_matches(events, team_id, league_name, venue=None, limit=5):
+    out = []
+
+    for ev in events:
+        if not is_finished(ev):
+            continue
+
+        if not same_league(ev, league_name):
+            continue
+
+        home = ev.get("homeTeam", {}) or {}
+        away = ev.get("awayTeam", {}) or {}
+
+        is_home = str(home.get("id")) == str(team_id)
+        is_away = str(away.get("id")) == str(team_id)
+
+        if not is_home and not is_away:
+            continue
+
+        if venue == "home" and not is_home:
+            continue
+
+        if venue == "away" and not is_away:
+            continue
+
+        hg, ag = parse_score(ev)
+
+        if hg is None or ag is None:
+            continue
+
+        out.append({
+            "home": home.get("name", ""),
+            "away": away.get("name", ""),
+            "home_goals": hg,
+            "away_goals": ag,
+            "btts_yes": hg > 0 and ag > 0,
+            "btts_no": not (hg > 0 and ag > 0),
+        })
+
+        if len(out) >= limit:
+            break
+
+    return out
+
+
+def stats_from_matches(matches):
+    total = len(matches)
+    yes = sum(1 for m in matches if m["btts_yes"])
+    no = total - yes
+    gols = sum(m["home_goals"] + m["away_goals"] for m in matches)
+
+    return {
+        "jogos": total,
+        "ambos_sim": yes,
+        "ambos_nao": no,
+        "pct_sim": pct(yes, total),
+        "pct_nao": pct(no, total),
+        "media_gols": round(gols / total, 2) if total else 0,
+    }
+
+
+def analyze_btts(row):
+    casa = row["Casa"]
+    fora = row["Fora"]
+    liga = row["Liga"]
+
+    home_id = row.get("Casa ID", "") or search_team_id(casa)
+    away_id = row.get("Fora ID", "") or search_team_id(fora)
+
+    home_events = fetch_recent_team_events(home_id)
+    away_events = fetch_recent_team_events(away_id)
+
+    home_last5 = filter_team_matches(home_events, home_id, liga, venue=None, limit=5)
+    away_last5 = filter_team_matches(away_events, away_id, liga, venue=None, limit=5)
+
+    home_home5 = filter_team_matches(home_events, home_id, liga, venue="home", limit=5)
+    away_away5 = filter_team_matches(away_events, away_id, liga, venue="away", limit=5)
+
+    s_home = stats_from_matches(home_last5)
+    s_away = stats_from_matches(away_last5)
+    s_home_venue = stats_from_matches(home_home5)
+    s_away_venue = stats_from_matches(away_away5)
+
+    min_sample = min(
+        s_home["jogos"],
+        s_away["jogos"],
+        s_home_venue["jogos"],
+        s_away_venue["jogos"],
     )
 
+    general_yes = round((s_home["pct_sim"] + s_away["pct_sim"]) / 2)
+    venue_yes = round((s_home_venue["pct_sim"] + s_away_venue["pct_sim"]) / 2)
+    score_yes = round((general_yes * 0.45) + (venue_yes * 0.55))
 
-def contains_any(text, names):
-    text = str(text).lower()
-    return any(name.lower() in text for name in names)
+    general_no = round((s_home["pct_nao"] + s_away["pct_nao"]) / 2)
+    venue_no = round((s_home_venue["pct_nao"] + s_away_venue["pct_nao"]) / 2)
+    score_no = round((general_no * 0.45) + (venue_no * 0.55))
 
-
-def stars(score):
-    if score >= 85:
-        return "⭐⭐⭐⭐⭐"
-    elif score >= 72:
-        return "⭐⭐⭐⭐"
-    elif score >= 58:
-        return "⭐⭐⭐"
-    elif score >= 45:
-        return "⭐⭐"
+    if score_yes >= score_no:
+        pick = "Ambos marcam — SIM"
+        score = score_yes
+        detalhe = f"Geral SIM {general_yes}% | Casa/Fora SIM {venue_yes}%"
     else:
-        return "⭐"
+        pick = "Ambos marcam — NÃO"
+        score = score_no
+        detalhe = f"Geral NÃO {general_no}% | Casa/Fora NÃO {venue_no}%"
 
+    if min_sample < 3:
+        score = min(score, 64)
+        detalhe += " | Amostra baixa"
 
-def bet_type(score):
-    if score >= 72:
-        return "CONSERVADOR"
-    elif score >= 58:
-        return "VALOR"
-    elif score >= 45:
-        return "RISCO CONTROLADO"
-    return "EVITAR"
-
-
-def consensus_label(score):
-    if score >= 75:
-        return "CONSENSO FORTE"
-    elif score >= 58:
-        return "CONSENSO MÉDIO"
-    return "SEM CONSENSO"
-
-
-def momentum_score(row):
-    score = 50
-
-    casa = row["Casa"]
-    fora = row["Fora"]
-    jogo = row["Jogo"]
-    liga = row["Liga"]
-
-    profile = league_profile(liga)
-
-    if contains_any(casa, STRONG_TEAMS):
-        score += 18
-
-    if contains_any(fora, STRONG_TEAMS):
-        score -= 5
-
-    if profile["level"] >= 4:
-        score += 8
-
-    if contains_any(jogo, AGGRESSIVE_TEAMS):
-        score += 5
-
-    return max(0, min(100, score))
-
-
-# =========================================================
-# MOTORES DE ANÁLISE
-# =========================================================
-
-def analyze_winner(row):
-    casa = row["Casa"]
-    fora = row["Fora"]
-    jogo = row["Jogo"]
-    liga = row["Liga"]
-
-    profile = league_profile(liga)
-    score = 50
-    pick = "Evitar vencedor"
-
-    if contains_any(casa, STRONG_TEAMS):
-        score += 25
-        pick = f"{casa} vence"
-
-    elif contains_any(fora, STRONG_TEAMS):
-        score += 12
-        pick = f"{fora} DNB"
-
-    else:
-        score += profile["level"] * 3
-        pick = f"{casa} DNB"
-
-    if "Libertadores" in liga or "Sudamericana" in liga:
-        if not contains_any(casa, STRONG_TEAMS):
-            pick = f"{casa} ou empate (1X)"
-            score += 5
-
-    if "Egito" in liga or "Primera Nacional" in liga:
-        score -= 10
-
-    mom = momentum_score(row)
-    score = int((score * 0.75) + (mom * 0.25))
+    positivo = "SIM" if score >= BTTS_THRESHOLD else "NÃO"
 
     return {
         "Hora": row["Hora"],
-        "Jogo": jogo,
+        "Jogo": row["Jogo"],
         "Liga": liga,
-        "Pick": pick,
+        "Pick": pick if positivo == "SIM" else "Sem entrada",
+        "Probabilidade": f"{score}%",
         "Força": stars(score),
         "Tipo": bet_type(score),
-        "Score": score,
         "Consenso": consensus_label(score),
-        "Momentum": mom
+        "Positivo 75%+": positivo,
+        "Score": score,
+        "Últ.5 Mandante Liga BTTS SIM": f'{s_home["pct_sim"]}% ({s_home["ambos_sim"]}/{s_home["jogos"]})',
+        "Últ.5 Visitante Liga BTTS SIM": f'{s_away["pct_sim"]}% ({s_away["ambos_sim"]}/{s_away["jogos"]})',
+        "Mandante em casa BTTS SIM": f'{s_home_venue["pct_sim"]}% ({s_home_venue["ambos_sim"]}/{s_home_venue["jogos"]})',
+        "Visitante fora BTTS SIM": f'{s_away_venue["pct_sim"]}% ({s_away_venue["ambos_sim"]}/{s_away_venue["jogos"]})',
+        "Detalhe": detalhe,
     }
 
-
-def analyze_goals(row):
-    jogo = row["Jogo"]
-    liga = row["Liga"]
-    profile = league_profile(liga)
-
-    score = 45 + profile["goals"] * 8
-    pick = "Over 1.5 gols"
-
-    if profile["goals"] >= 4:
-        pick = "Over 2.5 gols"
-        score += 8
-
-    if contains_any(jogo, DEFENSIVE_TEAMS):
-        pick = "Under 2.5 gols"
-        score += 8
-
-    if contains_any(jogo, ["Al-Hilal", "PSG", "Bayern", "Roda", "Waalwijk"]):
-        pick = "Over 2.5 gols"
-        score += 12
-
-    if "Egito" in liga or "Portugal 2" in liga or "Primera Nacional" in liga:
-        pick = "Under 2.5 gols"
-        score += 5
-
-    mom = momentum_score(row)
-    score = int((score * 0.80) + (mom * 0.20))
-
-    return {
-        "Hora": row["Hora"],
-        "Jogo": jogo,
-        "Liga": liga,
-        "Pick": pick,
-        "Força": stars(score),
-        "Tipo": bet_type(score),
-        "Score": score,
-        "Consenso": consensus_label(score),
-        "Momentum": mom
-    }
-
-
-def analyze_corners(row):
-    jogo = row["Jogo"]
-    liga = row["Liga"]
-    profile = league_profile(liga)
-
-    score = 42 + profile["corners"] * 8
-    pick = "Over 8.5 escanteios"
-
-    if profile["corners"] >= 4:
-        pick = "Over 9.5 escanteios"
-        score += 8
-
-    if contains_any(jogo, HIGH_CORNERS_TEAMS):
-        pick = "Over 8.5 escanteios"
-        score += 15
-
-    if contains_any(jogo, DEFENSIVE_TEAMS):
-        pick = "Under 10.5 escanteios"
-        score += 4
-
-    if "Egito" in liga or "Primera Nacional" in liga:
-        pick = "Evitar escanteios"
-        score -= 12
-
-    mom = momentum_score(row)
-    score = int((score * 0.80) + (mom * 0.20))
-
-    return {
-        "Hora": row["Hora"],
-        "Jogo": jogo,
-        "Liga": liga,
-        "Pick": pick,
-        "Força": stars(score),
-        "Tipo": bet_type(score),
-        "Score": score,
-        "Consenso": consensus_label(score),
-        "Momentum": mom
-    }
-
-
-def analyze_cards(row):
-    jogo = row["Jogo"]
-    liga = row["Liga"]
-    profile = league_profile(liga)
-
-    score = 40 + profile["cards"] * 9
-    pick = "Over 4.5 cartões"
-
-    if profile["cards"] >= 5:
-        pick = "Over 5.5 cartões"
-        score += 8
-
-    if contains_any(jogo, AGGRESSIVE_TEAMS):
-        pick = "Over 4.5 cartões"
-        score += 12
-
-    if contains_any(jogo, ["Boca", "Cruzeiro", "San Lorenzo", "Santos"]):
-        pick = "Over 5.5 cartões"
-        score += 10
-
-    if "Eredivisie" in liga:
-        pick = "Under 4.5 cartões"
-        score += 4
-
-    if "Saudi" in liga:
-        pick = "Under 4.5 cartões"
-        score -= 3
-
-    mom = momentum_score(row)
-    score = int((score * 0.85) + (mom * 0.15))
-
-    return {
-        "Hora": row["Hora"],
-        "Jogo": jogo,
-        "Liga": liga,
-        "Pick": pick,
-        "Força": stars(score),
-        "Tipo": bet_type(score),
-        "Score": score,
-        "Consenso": consensus_label(score),
-        "Momentum": mom
-    }
-
-
-# =========================================================
-# EXPORTAÇÃO EXCEL COM OPENPYXL
-# =========================================================
 
 def to_excel(dfs):
     output = BytesIO()
@@ -343,181 +334,169 @@ def to_excel(dfs):
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
         for sheet_name, df in dfs.items():
             df.to_excel(writer, sheet_name=sheet_name, index=False)
+            ws = writer.sheets[sheet_name]
 
-            worksheet = writer.sheets[sheet_name]
-
-            for column_cells in worksheet.columns:
-                max_length = 0
-                column_letter = column_cells[0].column_letter
-
-                for cell in column_cells:
-                    try:
-                        value_length = len(str(cell.value))
-                        if value_length > max_length:
-                            max_length = value_length
-                    except Exception:
-                        pass
-
-                adjusted_width = min(max_length + 2, 40)
-                worksheet.column_dimensions[column_letter].width = adjusted_width
+            for col_cells in ws.columns:
+                letter = col_cells[0].column_letter
+                max_len = max(
+                    len(str(c.value)) if c.value is not None else 0
+                    for c in col_cells
+                )
+                ws.column_dimensions[letter].width = min(max_len + 2, 50)
 
     return output.getvalue()
 
 
-# =========================================================
-# INTERFACE
-# =========================================================
-
-st.title("⚽ Scanner X10 — SCEM + Consenso PRO Multi-Mercados")
+st.title("⚽ Scanner X10 — Ambos Marcam / Ambos Não Marcam")
 
 st.markdown("""
-Scanner V1 manual, sem API.
+Estudo específico para **BTTS**:
 
-Analisa:
-- Vitória
-- Gols
-- Escanteios
-- Cartões
-- Momentum Score
-- Estratégia de múltiplas e singles
+- Últimos 5 jogos de cada time na liga
+- Últimos 5 jogos do mandante em casa na liga
+- Últimos 5 jogos do visitante fora na liga
+- Entrada positiva somente com **75% ou mais**
 """)
 
-default_text = """11:00\tEgito\tPetrojet vs Ismaily
-11:00\tEgito\tZED FC vs Pharco FC
-13:00\tSaudi Pro League\tAl-Shabab vs Al-Fateh
-13:45\tEredivisie\tRoda JC Kerkrade vs RKC Waalwijk
-13:45\tSaudi Pro League\tNeom SC vs Al-Hazem
-14:00\tEgito\tArab Contractors FC vs Ghazl El Mahalla FC
-14:00\tEgito\tIsmailia Electricity Club vs National Bank of Egypt
-14:00\tPortugal 2\tFeirense vs Torreense
-15:00\tSaudi Pro League\tAl-Hilal vs Damac FC
-15:00\tSaudi Pro League\tAl-Khaleej vs Al-Najma SC
-15:45\tChampionship\tSouthampton vs Ipswich Town
-16:00\tChampions League\tParis Saint-Germain vs FC Bayern München
-19:00\tLibertadores\tCA Lanús vs LDU
-19:00\tLibertadores\tLibertad vs Independiente del Valle
-19:00\tSudamericana\tSan Lorenzo vs Santos
-19:00\tSudamericana\tBotafogo vs Club Independiente
-19:30\tPrimera Nacional\tClub Ferro Carril Oeste vs Almirante Brown
-21:00\tLibertadores\tUniversidad Central vs Rosario Central
-21:00\tSudamericana\tBarracas Central vs Audax Italiano
-21:30\tLibertadores\tCruzeiro vs Boca Juniors
-21:30\tSudamericana\tMillonarios vs São Paulo
-21:30\tSudamericana\tRecoleta FC vs Deportivo Cuenca
-23:00\tLibertadores\tDeportes Tolima vs Coquimbo Unido
-23:00\tLibertadores\tClub Sporting Cristal vs Junior Barranquilla
-23:00\tSudamericana\tO'Higgins vs Boston River"""
-
-games_text = st.text_area(
-    "Cole aqui os jogos no formato: Hora TAB Liga TAB Jogo",
-    value=default_text,
-    height=350
+modo = st.radio(
+    "Escolha a fonte dos jogos:",
+    [
+        "SofaScore automático",
+        "Colar JSON do SofaScore",
+        "Colar lista manual",
+    ],
+    horizontal=True,
 )
 
-min_score = st.slider(
-    "Score mínimo para exibir nas planilhas",
-    min_value=0,
-    max_value=100,
-    value=55
-)
+df_games = pd.DataFrame()
 
-run = st.button("🚀 Rodar Scanner X10")
+if modo == "SofaScore automático":
+    selected_date = st.date_input("Data dos jogos", value=date.today())
+    date_str = selected_date.strftime("%Y-%m-%d")
 
-if run:
-    df_games = parse_games(games_text)
+    if st.button("🔎 Buscar jogos no SofaScore"):
+        try:
+            df_games = fetch_sofascore_events(date_str)
+            st.session_state["df_games"] = df_games
+            st.success(f"{len(df_games)} jogos encontrados no SofaScore.")
+        except Exception as e:
+            st.error(f"Falha ao buscar no SofaScore: {e}")
+            st.warning("Use a opção 'Colar JSON do SofaScore' como fallback.")
 
-    if df_games.empty:
-        st.error("Nenhum jogo identificado. Verifique o formato da lista.")
-        st.stop()
+elif modo == "Colar JSON do SofaScore":
+    json_text = st.text_area("Cole aqui o JSON bruto do SofaScore", height=300)
 
-    victory = pd.DataFrame([analyze_winner(row) for _, row in df_games.iterrows()])
-    goals = pd.DataFrame([analyze_goals(row) for _, row in df_games.iterrows()])
-    corners = pd.DataFrame([analyze_corners(row) for _, row in df_games.iterrows()])
-    cards = pd.DataFrame([analyze_cards(row) for _, row in df_games.iterrows()])
-
-    victory = victory[victory["Score"] >= min_score].sort_values("Score", ascending=False)
-    goals = goals[goals["Score"] >= min_score].sort_values("Score", ascending=False)
-    corners = corners[corners["Score"] >= min_score].sort_values("Score", ascending=False)
-    cards = cards[cards["Score"] >= min_score].sort_values("Score", ascending=False)
-
-    display_cols = [
-        "Hora", "Jogo", "Liga", "Pick", "Força",
-        "Tipo", "Consenso", "Momentum", "Score"
-    ]
-
-    st.success(f"{len(df_games)} jogos analisados com sucesso.")
-
-    tab1, tab2, tab3, tab4, tab5 = st.tabs([
-        "📊 Vitória",
-        "⚽ Gols",
-        "🚩 Escanteios",
-        "🟨 Cartões",
-        "🎯 Estratégia"
-    ])
-
-    with tab1:
-        st.subheader("📊 Planilha — Vitória")
-        st.dataframe(victory[display_cols], use_container_width=True)
-
-    with tab2:
-        st.subheader("⚽ Planilha — Gols")
-        st.dataframe(goals[display_cols], use_container_width=True)
-
-    with tab3:
-        st.subheader("🚩 Planilha — Escanteios")
-        st.dataframe(corners[display_cols], use_container_width=True)
-
-    with tab4:
-        st.subheader("🟨 Planilha — Cartões")
-        st.dataframe(cards[display_cols], use_container_width=True)
-
-    with tab5:
-        st.subheader("🎯 Estratégia Final")
-
-        all_picks = pd.concat([
-            victory.assign(Mercado="Vitória"),
-            goals.assign(Mercado="Gols"),
-            corners.assign(Mercado="Escanteios"),
-            cards.assign(Mercado="Cartões")
-        ])
-
-        multiplas = all_picks[all_picks["Score"] >= 72].sort_values("Score", ascending=False)
-
-        singles = all_picks[
-            (all_picks["Score"] >= 58) & (all_picks["Score"] < 72)
-        ].sort_values("Score", ascending=False)
-
-        st.markdown("### 🔒 Picks para múltiplas — 4 e 5 estrelas")
-        st.dataframe(
-            multiplas[[
-                "Mercado", "Hora", "Jogo", "Liga",
-                "Pick", "Força", "Tipo", "Score"
-            ]],
-            use_container_width=True
-        )
-
-        st.markdown("### 💰 Singles de valor — 3 estrelas")
-        st.dataframe(
-            singles[[
-                "Mercado", "Hora", "Jogo", "Liga",
-                "Pick", "Força", "Tipo", "Score"
-            ]],
-            use_container_width=True
-        )
-
-    excel_file = to_excel({
-        "Vitoria": victory[display_cols],
-        "Gols": goals[display_cols],
-        "Escanteios": corners[display_cols],
-        "Cartoes": cards[display_cols],
-    })
-
-    st.download_button(
-        label="📥 Baixar planilha Excel",
-        data=excel_file,
-        file_name="scanner_x10_scem_consenso.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    )
+    if st.button("📥 Ler JSON"):
+        try:
+            data = json.loads(json_text)
+            df_games = parse_sofascore_json(data)
+            st.session_state["df_games"] = df_games
+            st.success(f"{len(df_games)} jogos lidos do JSON.")
+        except Exception as e:
+            st.error(f"Erro ao ler JSON: {e}")
 
 else:
-    st.info("Cole a lista de jogos e clique em Rodar Scanner X10.")
+    manual_text = st.text_area(
+        "Cole no formato: Hora TAB Liga TAB Jogo",
+        height=300,
+        value="""15:00\tPremier League\tArsenal vs Chelsea
+16:00\tSerie A\tInter vs Lazio
+21:30\tBrazilian Serie A\tFlamengo vs Palmeiras""",
+    )
+
+    if st.button("📋 Ler lista manual"):
+        df_games = parse_manual_games(manual_text)
+        st.session_state["df_games"] = df_games
+        st.success(f"{len(df_games)} jogos lidos manualmente.")
+
+if "df_games" in st.session_state:
+    df_games = st.session_state["df_games"]
+
+if not df_games.empty:
+    st.subheader("Jogos carregados")
+    st.dataframe(df_games[["Hora", "Liga", "Jogo"]], use_container_width=True)
+
+    min_score = st.slider("Score mínimo para exibir", 0, 100, 75)
+
+    if st.button("🚀 Rodar Scanner X10 BTTS"):
+        with st.spinner("Analisando últimos 5 jogos na liga e recortes casa/fora..."):
+            btts = pd.DataFrame([analyze_btts(row) for _, row in df_games.iterrows()])
+
+        btts_filtrado = btts[btts["Score"] >= min_score].sort_values(
+            "Score", ascending=False
+        )
+
+        positivos = btts[btts["Positivo 75%+"] == "SIM"].sort_values(
+            "Score", ascending=False
+        )
+
+        monitorar = btts[
+            (btts["Score"] >= 65) & (btts["Score"] < 75)
+        ].sort_values("Score", ascending=False)
+
+        display_cols = [
+            "Hora",
+            "Jogo",
+            "Liga",
+            "Pick",
+            "Probabilidade",
+            "Força",
+            "Tipo",
+            "Consenso",
+            "Positivo 75%+",
+            "Score",
+            "Detalhe",
+        ]
+
+        detail_cols = [
+            "Hora",
+            "Jogo",
+            "Liga",
+            "Pick",
+            "Score",
+            "Últ.5 Mandante Liga BTTS SIM",
+            "Últ.5 Visitante Liga BTTS SIM",
+            "Mandante em casa BTTS SIM",
+            "Visitante fora BTTS SIM",
+            "Detalhe",
+        ]
+
+        tab1, tab2, tab3, tab4 = st.tabs([
+            "🎯 Entradas 75%+",
+            "📊 Todos os estudos",
+            "🔎 Detalhamento",
+            "📥 Excel",
+        ])
+
+        with tab1:
+            st.markdown("### ✅ Picks positivas")
+            st.dataframe(positivos[display_cols], use_container_width=True)
+
+        with tab2:
+            st.markdown("### 📊 Todos os jogos analisados")
+            st.dataframe(btts_filtrado[display_cols], use_container_width=True)
+
+            st.markdown("### 👀 Monitorar — abaixo de 75%")
+            st.dataframe(monitorar[display_cols], use_container_width=True)
+
+        with tab3:
+            st.markdown("### 🔎 Base do cálculo")
+            st.dataframe(btts[detail_cols], use_container_width=True)
+
+        excel_file = to_excel({
+            "BTTS_75_positivo": positivos[display_cols],
+            "Todos_filtrados": btts_filtrado[display_cols],
+            "Detalhamento": btts[detail_cols],
+            "Monitorar": monitorar[display_cols],
+        })
+
+        with tab4:
+            st.download_button(
+                label="📥 Baixar Excel",
+                data=excel_file,
+                file_name="scanner_x10_btts.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+
+else:
+    st.info("Carregue os jogos por uma das opções acima.")
